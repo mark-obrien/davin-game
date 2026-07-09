@@ -76,6 +76,66 @@ body::after {
   font-variant-numeric: tabular-nums;
 }
 
+#wantedPanel #wanted {
+  color: #ff5964;
+  letter-spacing: 2px;
+}
+
+#wantedPanel.chase {
+  animation: wantedPulse 0.7s infinite alternate;
+}
+
+@keyframes wantedPulse {
+  from { border-color: rgba(255, 80, 90, 0.4); }
+  to {
+    border-color: rgba(255, 80, 90, 1);
+    box-shadow: 0 0 14px rgba(255, 60, 70, 0.5);
+  }
+}
+
+/* ---------- rear-view mirror frame ---------- */
+#mirror {
+  position: fixed;
+  top: 78px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: clamp(200px, 30vw, 400px);
+  aspect-ratio: 3.2 / 1;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* ---------- oil slick button + shield tag ---------- */
+#oilBtn {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 6;
+  font-size: 17px;
+  padding: 12px 20px;
+  background: rgba(8, 12, 20, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  box-shadow: none;
+}
+
+#oilBtn.empty {
+  opacity: 0.35;
+}
+
+#shieldTag {
+  position: fixed;
+  left: 18px;
+  bottom: 22px;
+  z-index: 6;
+  color: #8fd0ff;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-shadow: 0 0 12px rgba(80, 170, 255, 0.9);
+}
+
 /* ---------- floating bonus text ---------- */
 #toast {
   position: fixed;

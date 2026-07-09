@@ -64,8 +64,20 @@ let targetSpeed = difficulty.startSpeed; // what the difficulty ramp wants
 let curSpeed = 0;              // what the car is actually doing
 let shake = 0;                 // camera shake time left
 let crashFx = null;            // everything animating during a crash
+let wanted = 0;                // ★ level — rises every time you escape
+let oilCharges = 2;            // defensive oil slicks in stock
+let shielded = false;          // one free hit from the shield power-up
+let tiresBlown = 0;            // seconds of blown-tire handling left
+let dayT = 0.06;               // position in the day/night cycle [0..1)
+let pickupNext = 250;          // distance at which the next power-up spawns
 
 const player = { x: laneX(1), latVel: 0, group: null };
+let headlights = null;   // spotlight that comes on at night
+let shieldMesh = null;   // glowing bubble while the shield is up
+
+// Dev cheats for testing, e.g. index.html?wanted=2&copat=150&night=1
+const DEV = new URLSearchParams(location.search);
+if (DEV.has('night')) dayT = 0.5;
 let npcs = [];                 // active NPC cars
 const npcPool = { sedan: [], truck: [] };  // recycled car models
 
@@ -77,12 +89,14 @@ const ui = {
   toast: $('toast'), loading: $('loading'), loadfill: $('loadfill'),
   loadstep: $('loadstep'), menu: $('menu'), gameover: $('gameover'),
   paused: $('paused'), finalScore: $('finalScore'), newBest: $('newBest'),
-  overTitle: $('overTitle'),
+  overTitle: $('overTitle'), wantedPanel: $('wantedPanel'),
+  wanted: $('wanted'), oilBtn: $('oilBtn'), shieldTag: $('shieldTag'),
+  mirror: $('mirror'),
 };
 
 /* ---------------- 3. Renderer, scene, camera, lights ---------------- */
 
-let renderer, scene, camera, sun;
+let renderer, scene, camera, sun, hemi, mirrorCam;
 const SKY = 0x9ec8ef;
 
 function initRenderer() {
@@ -94,6 +108,8 @@ function initRenderer() {
   renderer.toneMappingExposure = 1.1;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;     // soft sun shadows
+  // shadows are computed once per frame and shared with the mirror render
+  renderer.shadowMap.autoUpdate = false;
   document.body.prepend(renderer.domElement);
 
   scene = new THREE.Scene();
@@ -104,7 +120,10 @@ function initRenderer() {
     62, window.innerWidth / window.innerHeight, 0.1, 600);
   camera.position.set(0, 4.4, 8.5);
 
-  const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x3a5f2f, 0.65);
+  // the rear-view mirror is a second camera looking backwards
+  mirrorCam = new THREE.PerspectiveCamera(50, 3.2, 0.4, 620);
+
+  hemi = new THREE.HemisphereLight(0xbfd9ff, 0x3a5f2f, 0.65);
   scene.add(hemi);
 
   sun = new THREE.DirectionalLight(0xfff2d9, 1.35);
@@ -186,8 +205,18 @@ function makeRoadTexture() {
 let roadTex;
 
 function initWorld() {
+  // The sky is a dome mesh WITH fog enabled: it sits beyond the fog's
+  // far distance, so it renders as 100% fog — the exact same color
+  // transform the fogged ground gets. Sky and horizon can never show
+  // a seam this way, in any camera, at any time of day.
+  skyMat = new THREE.MeshBasicMaterial(
+    { color: SKY, side: THREE.BackSide, depthWrite: false });
+  scene.add(new THREE.Mesh(new THREE.SphereGeometry(520, 24, 12), skyMat));
+
+  // large enough that its edge is beyond the fog and the camera far
+  // plane — otherwise a seam shows at the horizon
   const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(600, 600),
+    new THREE.PlaneGeometry(1400, 1400),
     new THREE.MeshStandardMaterial({ color: 0x3f7a34, roughness: 1 }));
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
@@ -288,14 +317,17 @@ function placeTree(tree, z) {
   tree.rotation.y = Math.random() * Math.PI * 2;
 }
 
+let cloudMat = null;   // shared so the day/night cycle can tint the clouds
+let skyMat = null;     // the sky-dome material, retinted by the cycle
+
 function makeClouds() {
-  const mat = new THREE.MeshBasicMaterial(
+  cloudMat = new THREE.MeshBasicMaterial(
     { color: 0xffffff, transparent: true, opacity: 0.85 });
   const geo = new THREE.SphereGeometry(1, 10, 8);
   for (let i = 0; i < 6; i++) {
     const cloud = new THREE.Group();
     for (let p = 0; p < 3; p++) {
-      const puff = new THREE.Mesh(geo, mat);
+      const puff = new THREE.Mesh(geo, cloudMat);
       puff.position.set(p * 5 - 5 + Math.random() * 2, Math.random(), 0);
       puff.scale.set(4 + Math.random() * 3, 1.6 + Math.random(), 3);
       cloud.add(puff);
@@ -319,6 +351,55 @@ function scrollWorld(dz) {
       }
     }
   }
+}
+
+/* ---------------- 4b. Day / night cycle ---------------- */
+
+// Keyframes around the clock: noon → sunset → night → dawn → noon.
+// `dark` drives everything night-related (headlights, cloud tint).
+const skyC = (hex) => new THREE.Color(hex);
+const DAY_PHASES = [
+  { t: 0.0, sky: skyC(0x84b6ea), sunC: new THREE.Color(0xfff2d9),
+    sunI: 1.35, hemiI: 0.65, dark: 0 },
+  { t: 0.34, sky: skyC(0xe8a163), sunC: new THREE.Color(0xffb36b),
+    sunI: 0.7, hemiI: 0.38, dark: 0.3 },
+  { t: 0.46, sky: skyC(0x121d33), sunC: new THREE.Color(0x93a7e0),
+    sunI: 0.14, hemiI: 0.16, dark: 1 },
+  { t: 0.68, sky: skyC(0x121d33), sunC: new THREE.Color(0x93a7e0),
+    sunI: 0.14, hemiI: 0.16, dark: 1 },
+  { t: 0.82, sky: skyC(0xe8a163), sunC: new THREE.Color(0xffb36b),
+    sunI: 0.7, hemiI: 0.38, dark: 0.3 },
+  { t: 1.0, sky: skyC(0x84b6ea), sunC: new THREE.Color(0xfff2d9),
+    sunI: 1.35, hemiI: 0.65, dark: 0 },
+];
+const DAY_LENGTH = 160;   // seconds for a full day
+const _sky = new THREE.Color();
+const _sunTint = new THREE.Color();
+
+function applyDayNight(dt) {
+  dayT = (dayT + dt / DAY_LENGTH) % 1;
+  let a = DAY_PHASES[0];
+  let b = DAY_PHASES[1];
+  for (let i = 0; i < DAY_PHASES.length - 1; i++) {
+    if (dayT >= DAY_PHASES[i].t && dayT <= DAY_PHASES[i + 1].t) {
+      a = DAY_PHASES[i];
+      b = DAY_PHASES[i + 1];
+      break;
+    }
+  }
+  const k = (dayT - a.t) / (b.t - a.t || 1);
+  const mix = (x, y) => x + (y - x) * k;
+  _sky.copy(a.sky).lerp(b.sky, k);
+  _sunTint.copy(a.sunC).lerp(b.sunC, k);
+  scene.background.copy(_sky);      // fallback, hidden behind the dome
+  if (skyMat) skyMat.color.copy(_sky);
+  scene.fog.color.copy(_sky);
+  sun.color.copy(_sunTint);
+  sun.intensity = mix(a.sunI, b.sunI);
+  hemi.intensity = mix(a.hemiI, b.hemiI);
+  const dark = mix(a.dark, b.dark);
+  if (cloudMat) cloudMat.color.setScalar(1 - dark * 0.72);
+  if (headlights) headlights.intensity = dark * 4;
 }
 
 /* ---------------- 5. Car factory ---------------- */
@@ -441,6 +522,24 @@ function initPlayer() {
     new THREE.MeshStandardMaterial({ color: 0xf5f0e6, roughness: 0.4 }));
   stripe.position.y = 0.84;
   player.group.add(stripe);
+
+  // headlights: a real spotlight, faded in by the night cycle
+  headlights = new THREE.SpotLight(0xfff3c2, 0, 60, 0.5, 0.5, 1.0);
+  headlights.position.set(0, 1.1, -1.6);
+  headlights.target.position.set(0, 0.1, -30);
+  player.group.add(headlights);
+  player.group.add(headlights.target);
+
+  // shield bubble, hidden until the power-up is collected
+  shieldMesh = new THREE.Mesh(
+    new THREE.SphereGeometry(1, 20, 14),
+    new THREE.MeshBasicMaterial({ color: 0x55bbff, transparent: true,
+      opacity: 0.2, depthWrite: false }));
+  shieldMesh.scale.set(1.7, 1.2, 3.0);
+  shieldMesh.position.y = 0.8;
+  shieldMesh.visible = false;
+  player.group.add(shieldMesh);
+
   player.group.position.set(player.x, 0, 0);
   scene.add(player.group);
 }
@@ -639,10 +738,11 @@ function laneClearFor(n, lane) {
 
 /* ---------------- 6b. Police chase ---------------- */
 
-let cop = null;          // the active chase (one cruiser at a time)
-let copCar = null;       // the cruiser model, built once and reused
+let cops = [];           // active cruisers (two of them at wanted ★★+)
+const copPool = [];      // cruiser models, built once and reused
 let nextCopAt = 500;     // distance (m) at which the next chase begins
 let siren = null;
+let stickTimer = 0;      // countdown to the next spike strip drop
 
 function buildCopCar() {
   const g = buildCar('sedan');
@@ -666,94 +766,368 @@ function buildCopCar() {
   return g;
 }
 
-function spawnCop() {
-  if (!copCar) {
-    copCar = buildCopCar();
-    scene.add(copCar);
+function getCopCar() {
+  const pooled = copPool.pop();
+  if (pooled) { pooled.visible = true; return pooled; }
+  const g = buildCopCar();
+  scene.add(g);
+  return g;
+}
+
+// Wanted ★: one cruiser rams from behind. Wanted ★★+: a second unit
+// pulls up alongside and squeezes you toward the barrier.
+function spawnChase() {
+  wanted = Math.max(1, wanted);
+  const units = wanted >= 2 ? 2 : 1;
+  const side = player.x > (MEDIAN_HALF + ROAD_HALF) / 2 ? -1 : 1;
+  for (let i = 0; i < units; i++) {
+    cops.push({
+      g: getCopCar(),
+      role: i === 0 ? 'tail' : 'side',
+      side: i === 0 ? 0 : side,
+      x: player.x + (i === 0 ? 0 : side * 3.2),
+      z: 44 + i * 12,
+      speed: curSpeed, t: 0, squeeze: 0,
+      chaseFor: 14 + Math.random() * 5,
+      retreating: false, spinning: false,
+    });
   }
-  copCar.visible = true;
-  cop = { g: copCar, x: player.x, z: 42, speed: curSpeed, t: 0,
-          chaseFor: 13 + Math.random() * 5, retreating: false };
+  const g = cops[0].g;
+  g.rotation.set(0, 0, 0);   // pooled cars may come back spun around
   startSiren();
-  toast('🚨 POLICE! OUTRUN THEM!');
+  toast(wanted >= 3 ? '🚨 WANTED ★★★ — WATCH FOR SPIKE STRIPS!'
+      : units === 2 ? '🚨 TWO UNITS INCOMING!'
+      : '🚨 POLICE! OUTRUN THEM!');
+  stickTimer = 5;
+  updateWantedHud();
 }
 
-function dismissCop(escaped) {
-  copCar.visible = false;
-  cop = null;
-  stopSiren();
-  nextCopAt = distance + difficulty.copEvery * 2.6 + Math.random() * 600;
-  if (escaped) {
+function removeCop(c, msg) {
+  c.g.visible = false;
+  c.g.rotation.set(0, 0, 0);
+  copPool.push(c.g);
+  cops = cops.filter((k) => k !== c);
+  if (msg) {
     bonus += 500;
-    toast('YOU LOST THEM! +500');
+    toast(msg);
+  }
+  if (!cops.length) {
+    stopSiren();
+    wanted = Math.min(3, wanted + 1);   // they'll be back — angrier
+    nextCopAt = distance + difficulty.copEvery * 2.6 + Math.random() * 600;
+    updateWantedHud();
   }
 }
 
-function updateCop(dt, playerSpeed) {
-  if (!cop) {
-    if (state === STATE.PLAYING && distance > nextCopAt) spawnCop();
-    return;
-  }
-  cop.t += dt;
-
-  // flashing light bar
-  const phase = Math.floor(cop.t * 7) % 2 === 0;
-  cop.g.userData.red.visible = phase;
-  cop.g.userData.blue.visible = !phase;
-
-  if (state === STATE.OVER) {   // after a crash the cruiser pulls up
-    cop.speed = Math.max(0, cop.speed - 20 * dt);
-    cop.z = Math.max(6.5, cop.z + (playerSpeed - cop.speed) * dt);
-    cop.g.position.set(cop.x, 0, cop.z);
+function updateCops(dt, playerSpeed) {
+  if (!cops.length) {
+    if (state === STATE.PLAYING && distance > nextCopAt) spawnChase();
     return;
   }
 
-  if (!cop.retreating && cop.t > cop.chaseFor) cop.retreating = true;
-
-  // chase: clearly faster than you — boost to escape. retreat: give up.
-  const wantSpeed = cop.retreating ? playerSpeed * 0.75
-    : playerSpeed * difficulty.copSpeed + difficulty.copBoost;
-  cop.speed += (wantSpeed - cop.speed) * Math.min(1, 1.2 * dt);
-  cop.z += (playerSpeed - cop.speed) * dt;
-  if (cop.z < 3.8) cop.z = 3.8;   // right on your bumper
-
-  // steers toward you, but slower than you can dodge
-  const maxLat = 8 * dt;
-  cop.x += THREE.MathUtils.clamp(player.x - cop.x, -maxLat, maxLat);
-
-  cop.g.position.set(cop.x, 0, cop.z);
-  const spin = (cop.speed / 0.34) * dt;
-  for (const w of cop.g.userData.wheels) w.rotation.x -= spin;
-
-  updateSiren();
-
-  // rammed you → busted
-  if (Math.abs(cop.x - player.x) < 1.7 && cop.z < 4.3) {
-    crash({ x: cop.x, z: cop.z, halfW: 0.95, halfL: 2.25,
-            hit: false, hazT: 0, vx: 0, vz: 0, spinY: 0 }, true);
-    return;
-  }
-
-  // the cop can crash into traffic — bait them into it!
-  for (const n of npcs) {
-    if (n.dir !== -1 || n.hit) continue;
-    if (Math.abs(n.x - cop.x) < n.halfW + 0.75 &&
-        Math.abs(n.z - cop.z) < n.halfL + 1.95) {
-      n.hit = true;
-      n.hazT = 0;
-      const away = Math.sign(n.x - cop.x) || 1;
-      n.vx = away * 3;
-      n.vz = -5;
-      n.spinY = away * 3;
-      noiseBurst(0.5, 700, 120, 0.35);
-      dismissCop(false);
-      bonus += 500;
-      toast('THE COPS CRASHED! +500');
-      return;
+  // at wanted ★★+ the chase keeps dropping spike strips ahead of you
+  if (state === STATE.PLAYING && wanted >= 2) {
+    stickTimer -= dt;
+    if (stickTimer <= 0) {
+      stickTimer = wanted >= 3 ? 4 + Math.random() * 3 : 7 + Math.random() * 4;
+      spawnStick();
     }
   }
 
-  if (cop.retreating && cop.z > 40) dismissCop(true);
+  for (const c of [...cops]) {
+    c.t += dt;
+    const phase = Math.floor(c.t * 7) % 2 === 0;
+    c.g.userData.red.visible = phase;
+    c.g.userData.blue.visible = !phase;
+
+    if (state === STATE.OVER) {   // after a crash the cruisers pull up
+      c.speed = Math.max(0, c.speed - 20 * dt);
+      c.z = Math.max(6.5, c.z + (playerSpeed - c.speed) * dt);
+      c.g.position.set(c.x, 0, c.z);
+      continue;
+    }
+
+    if (c.spinning) {             // hit an oil slick — spins out behind you
+      c.g.rotation.y += 7 * dt;
+      c.speed += (playerSpeed * 0.4 - c.speed) * Math.min(1, 1.5 * dt);
+      c.z += (playerSpeed - c.speed) * dt;
+      c.g.position.set(c.x, 0, c.z);
+      if (c.z > 40) removeCop(c, 'COP SPUN OUT! +500');
+      continue;
+    }
+
+    if (!c.retreating && c.t > c.chaseFor) c.retreating = true;
+
+    // approach the hold position, capped at the cruiser's top speed
+    const maxChase = playerSpeed * (difficulty.copSpeed + wanted * 0.01) +
+                     difficulty.copBoost;
+    const targetZ = c.role === 'side' ? 0.6 : 3.8;
+    const wantSpeed = c.retreating ? playerSpeed * 0.75
+      : Math.min(maxChase,
+          playerSpeed + THREE.MathUtils.clamp((c.z - targetZ) * 0.6, -4, 99));
+    c.speed += (wantSpeed - c.speed) * Math.min(1, 1.2 * dt);
+    c.z += (playerSpeed - c.speed) * dt;
+    const minZ = c.role === 'side' ? -1.5 : 3.6;
+    if (c.z < minZ) c.z = minZ;
+
+    // the tail unit lines up to ram; the side unit pulls alongside,
+    // then squeezes in — change speed to break the box
+    let targetX = player.x;
+    if (c.role === 'side') {
+      if (c.z > 7) {
+        c.squeeze = 0;
+        targetX = player.x + c.side * 2.8;
+      } else {
+        c.squeeze = Math.min(2.4, c.squeeze + 0.55 * dt);
+        targetX = player.x + c.side * (2.8 - c.squeeze);
+      }
+    }
+    const maxLat = (c.role === 'side' ? 6.5 : 8) * dt;
+    c.x += THREE.MathUtils.clamp(targetX - c.x, -maxLat, maxLat);
+    c.x = THREE.MathUtils.clamp(c.x, MEDIAN_HALF + 1.05, ROAD_HALF - 1.05);
+
+    c.g.position.set(c.x, 0, c.z);
+    const spin = (c.speed / 0.34) * dt;
+    for (const w of c.g.userData.wheels) w.rotation.x -= spin;
+
+    // rammed or squeezed you → busted
+    if (Math.abs(c.x - player.x) < 1.8 && Math.abs(c.z) < 4.3) {
+      crash({ x: c.x, z: c.z, halfW: 0.95, halfL: 2.25,
+              hit: false, hazT: 0, vx: 0, vz: 0, spinY: 0 }, true);
+      return;
+    }
+
+    // oil slicks spin them out
+    for (const s of slicks) {
+      if (Math.abs(s.m.position.x - c.x) < 2.2 &&
+          Math.abs(s.m.position.z - c.z) < 3.2) {
+        c.spinning = true;
+        noiseBurst(0.6, 1800, 200, 0.3, 'bandpass');
+        break;
+      }
+    }
+    if (c.spinning) continue;
+
+    // and they can still pile into traffic — bait them!
+    for (const n of npcs) {
+      if (n.dir !== -1 || n.hit) continue;
+      if (Math.abs(n.x - c.x) < n.halfW + 0.75 &&
+          Math.abs(n.z - c.z) < n.halfL + 1.95) {
+        n.hit = true;
+        n.hazT = 0;
+        const away = Math.sign(n.x - c.x) || 1;
+        n.vx = away * 3;
+        n.vz = -5;
+        n.spinY = away * 3;
+        noiseBurst(0.5, 700, 120, 0.35);
+        removeCop(c, 'THE COPS CRASHED! +500');
+        break;
+      }
+    }
+    if (!cops.includes(c)) continue;
+
+    if (c.retreating && c.z > 40) {
+      removeCop(c, cops.length === 1 ? 'YOU LOST THEM! +500' : null);
+    }
+  }
+
+  updateSiren();
+}
+
+/* ------- 6c. Spike strips, oil slicks, power-ups, wanted HUD ------- */
+
+const stickPool = [];
+let sticks = [];
+
+function makeStick() {
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(4.2, 0.06, 0.4),
+    new THREE.MeshStandardMaterial({ color: 0x1c1f24, roughness: 0.8 }));
+  base.position.y = 0.04;
+  g.add(base);
+  const spikeGeo = new THREE.ConeGeometry(0.06, 0.22, 5);
+  const spikeMat = new THREE.MeshStandardMaterial(
+    { color: 0xb9c2cc, metalness: 0.8, roughness: 0.3 });
+  for (let i = 0; i < 9; i++) {
+    const s = new THREE.Mesh(spikeGeo, spikeMat);
+    s.position.set(-1.9 + i * 0.475, 0.16, 0);
+    g.add(s);
+  }
+  return g;
+}
+
+function spawnStick() {
+  const lane = (Math.random() * LANES) | 0;
+  let g = stickPool.pop();
+  if (!g) { g = makeStick(); scene.add(g); }
+  g.visible = true;
+  g.position.set(laneX(lane), 0, -290);
+  sticks.push({ g });
+  toast('🚧 SPIKE STRIP AHEAD!');
+}
+
+function blowTires() {
+  tiresBlown = 5;
+  shake = Math.max(shake, 0.5);
+  noiseBurst(0.2, 3200, 400, 0.4);
+  noiseBurst(0.25, 2600, 300, 0.35, 'lowpass', 0.1);
+  toast('💥 TIRES BLOWN!');
+}
+
+let tireSmokeT = 0;
+
+function updateBlownTires(dt) {
+  tiresBlown -= dt;
+  shake = Math.max(shake, 0.06);   // constant rattle while limping
+  tireSmokeT -= dt;
+  if (tireSmokeT <= 0) {
+    tireSmokeT = 0.09;
+    spawnSmoke(player.x - 0.8, 0.35, 1.3, false);
+    spawnSmoke(player.x + 0.8, 0.35, 1.3, false);
+  }
+  if (tiresBlown <= 0) toast('TIRES OK — GO!');
+}
+
+const slickPool = [];
+let slicks = [];
+
+function makeSlick() {
+  const m = new THREE.Mesh(
+    new THREE.CircleGeometry(1.5, 20),
+    new THREE.MeshStandardMaterial(
+      { color: 0x0d0f12, roughness: 0.12, metalness: 0.75 }));
+  m.rotation.x = -Math.PI / 2;
+  return m;
+}
+
+function deployOil() {
+  if (state !== STATE.PLAYING || oilCharges <= 0) return;
+  oilCharges--;
+  updateOilHud();
+  let m = slickPool.pop();
+  if (!m) { m = makeSlick(); scene.add(m); }
+  m.visible = true;
+  m.position.set(player.x, 0.035, 3.4);
+  slicks.push({ m, life: 15 });
+  tone(160, 0.25, 'sine', 0.15, -100);
+  toast('🛢️ OIL DROPPED');
+}
+
+const pickupPool = { shield: [], oil: [] };
+let pickups = [];
+
+function makePickup(type) {
+  if (type === 'shield') {
+    return new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.55),
+      new THREE.MeshStandardMaterial(
+        { color: 0x66bbff, emissive: 0x2277ff, emissiveIntensity: 1.6,
+          metalness: 0.3, roughness: 0.3 }));
+  }
+  const g = new THREE.Group();
+  const barrel = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.42, 0.42, 0.75, 12),
+    new THREE.MeshStandardMaterial({ color: 0x23272c, roughness: 0.5 }));
+  const stripe = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.43, 0.43, 0.18, 12),
+    new THREE.MeshStandardMaterial(
+      { color: 0xff8c42, emissive: 0xcc5500, emissiveIntensity: 0.8 }));
+  g.add(barrel, stripe);
+  return g;
+}
+
+function spawnPickup() {
+  const lane = (Math.random() * LANES) | 0;
+  if (npcs.some((n) => n.dir === -1 &&
+      (n.lane === lane || n.targetLane === lane) && n.z < -240)) {
+    pickupNext = distance + 60;   // lane busy at spawn depth — retry soon
+    return;
+  }
+  const type = Math.random() < 0.5 ? 'shield' : 'oil';
+  let g = pickupPool[type].pop();
+  if (!g) { g = makePickup(type); scene.add(g); }
+  g.visible = true;
+  pickups.push({ g, type, x: laneX(lane), z: -295,
+                 spin: Math.random() * 6, taken: false });
+}
+
+function collectPickup(p) {
+  p.taken = true;
+  tone(880, 0.12, 'triangle', 0.12, 440);
+  if (p.type === 'oil') {
+    oilCharges = Math.min(3, oilCharges + 1);
+    updateOilHud();
+    toast('🛢️ +1 OIL SLICK');
+  } else {
+    setShield(true);
+    toast('🛡 SHIELD UP!');
+  }
+}
+
+// Everything lying on the road scrolls past like the scenery does
+function updateWorldItems(dt, playerSpeed, playing) {
+  for (const p of pickups) {
+    if (p.taken) continue;
+    p.z += playerSpeed * dt;
+    p.spin += dt;
+    p.g.position.set(p.x, 1.0 + Math.sin(p.spin * 3) * 0.15, p.z);
+    p.g.rotation.y += 2 * dt;
+    if (playing && Math.abs(p.x - player.x) < 1.7 && Math.abs(p.z) < 2.6) {
+      collectPickup(p);
+    }
+  }
+  pickups = pickups.filter((p) => {
+    if (p.taken || p.z > 45) {
+      p.g.visible = false;
+      pickupPool[p.type].push(p.g);
+      return false;
+    }
+    return true;
+  });
+
+  sticks = sticks.filter((st) => {
+    st.g.position.z += playerSpeed * dt;
+    if (playing && tiresBlown <= 0 &&
+        Math.abs(st.g.position.x - player.x) < 2.5 &&
+        Math.abs(st.g.position.z) < 2.0) {
+      blowTires();
+    }
+    if (st.g.position.z > 45) {
+      st.g.visible = false;
+      stickPool.push(st.g);
+      return false;
+    }
+    return true;
+  });
+
+  slicks = slicks.filter((s) => {
+    s.m.position.z += playerSpeed * dt;
+    s.life -= dt;
+    if (s.life <= 0 || s.m.position.z > 45) {
+      s.m.visible = false;
+      slickPool.push(s.m);
+      return false;
+    }
+    return true;
+  });
+}
+
+function updateWantedHud() {
+  ui.wantedPanel.classList.toggle('hidden', wanted === 0);
+  ui.wanted.textContent = '★'.repeat(wanted);
+  ui.wantedPanel.classList.toggle('chase', cops.length > 0);
+}
+
+function updateOilHud() {
+  ui.oilBtn.textContent = `🛢️ ×${oilCharges}`;
+  ui.oilBtn.classList.toggle('empty', oilCharges === 0);
+}
+
+function setShield(on) {
+  shielded = on;
+  if (shieldMesh) shieldMesh.visible = on;
+  ui.shieldTag.classList.toggle('hidden', !on);
 }
 
 /* ---------------- 7. Crash particles ---------------- */
@@ -959,8 +1333,6 @@ function updateCrashFx(dt) {
       spawnSmoke(g.position.x, 0.9, g.position.z, crashFx.t < 0.45);
     }
   }
-  updateSmoke(dt);
-  updateDebris(dt);
 }
 
 /* ---------------- 8. Audio ---------------- */
@@ -1060,12 +1432,14 @@ function stopSiren() {
 }
 
 function updateSiren() {
-  if (!siren || !cop) return;
+  if (!siren || !cops.length || !actx) return;
   const t = actx.currentTime;
-  const freq = Math.floor(cop.t * 1.4) % 2 ? 660 : 990;   // wee-woo
+  const freq = Math.floor(cops[0].t * 1.4) % 2 ? 660 : 990;   // wee-woo
   siren.o.frequency.setTargetAtTime(freq, t, 0.03);
-  // louder the closer the cruiser gets
-  const vol = THREE.MathUtils.clamp(0.07 - (cop.z / 42) * 0.055, 0.015, 0.07);
+  // louder the closer the nearest cruiser gets
+  let minZ = 42;
+  for (const c of cops) minZ = Math.min(minZ, Math.abs(c.z));
+  const vol = THREE.MathUtils.clamp(0.07 - (minZ / 42) * 0.055, 0.015, 0.08);
   siren.g.gain.setTargetAtTime(vol, t, 0.1);
 }
 
@@ -1120,7 +1494,10 @@ window.addEventListener('keydown', (e) => {
   ensureAudio();
   const k = keyName(e);
   if (k) { keys[k] = true; e.preventDefault(); }
-  if (e.key === 'Enter' || e.key === ' ') {
+  if (e.key === ' ' && state === STATE.PLAYING) {
+    deployOil();                 // defensive maneuver!
+    e.preventDefault();
+  } else if (e.key === 'Enter' || e.key === ' ') {
     if (state === STATE.MENU) startGame();
     else if (state === STATE.OVER && ui.gameover.classList.contains('hidden') === false) startGame();
     e.preventDefault();
@@ -1188,8 +1565,29 @@ function resetRun(menuMode) {
   if (flash) flash.intensity = 0;
   for (const s of smokePool) { s.life = 0; s.m.visible = false; }
   for (const d of debrisPool) d.m.visible = false;
-  if (cop) { copCar.visible = false; cop = null; stopSiren(); }
+  for (const c of cops) {
+    c.g.visible = false;
+    c.g.rotation.set(0, 0, 0);
+    copPool.push(c.g);
+  }
+  cops = [];
+  stopSiren();
   nextCopAt = difficulty.copEvery + Math.random() * 200;
+  wanted = 0;
+  if (DEV.has('wanted')) wanted = Math.min(3, Number(DEV.get('wanted')) || 0);
+  if (DEV.has('copat')) nextCopAt = Number(DEV.get('copat')) || nextCopAt;
+  oilCharges = 2;
+  tiresBlown = 0;
+  setShield(false);
+  pickupNext = 250 + Math.random() * 150;
+  for (const p of pickups) { p.g.visible = false; pickupPool[p.type].push(p.g); }
+  pickups = [];
+  for (const st of sticks) { st.g.visible = false; stickPool.push(st.g); }
+  sticks = [];
+  for (const s of slicks) { s.m.visible = false; slickPool.push(s.m); }
+  slicks = [];
+  updateWantedHud();
+  updateOilHud();
   for (const n of npcs) releaseNpc(n);
   npcs = [];
   sameTimer = 1.2;
@@ -1213,6 +1611,8 @@ function startGame() {
   ui.menu.classList.add('hidden');
   ui.gameover.classList.add('hidden');
   ui.hud.classList.remove('hidden');
+  ui.mirror.classList.remove('hidden');
+  ui.oilBtn.classList.remove('hidden');
   ui.bestEl.textContent = best;
   ensureAudio();
   startEngine();
@@ -1276,12 +1676,14 @@ function updatePlayer(dt) {
   const left = keys.left || touch.left;
   const right = keys.right || touch.right;
   const dir = (right ? 1 : 0) - (left ? 1 : 0);
+  const grip = tiresBlown > 0 ? 0.5 : 1;   // blown tires barely steer
   if (dir) {
-    player.latVel += dir * STEER_ACCEL * dt;
+    player.latVel += dir * STEER_ACCEL * grip * dt;
   } else {
     player.latVel -= player.latVel * Math.min(1, 10 * dt);
   }
-  player.latVel = THREE.MathUtils.clamp(player.latVel, -STEER_MAX, STEER_MAX);
+  player.latVel = THREE.MathUtils.clamp(
+    player.latVel, -STEER_MAX * grip, STEER_MAX * grip);
   player.x += player.latVel * dt;
 
   const minX = MEDIAN_HALF + PLAYER_HALF_W + 0.15;
@@ -1299,10 +1701,24 @@ function updatePlayer(dt) {
 function checkCollisions() {
   if (state !== STATE.PLAYING) return;   // the cop may have busted us already
   for (const n of npcs) {
-    if (Math.abs(n.z) > 8) continue;
+    if (Math.abs(n.z) > 8 || n.hit) continue;
     const hitW = (PLAYER_HALF_W + n.halfW) - 0.25;   // small forgiveness
     const hitL = (PLAYER_HALF_L + n.halfL) - 0.35;
     if (Math.abs(n.x - player.x) < hitW && Math.abs(n.z) < hitL) {
+      if (shielded) {
+        // the shield takes the hit: the other car is knocked away
+        setShield(false);
+        const away = Math.sign(n.x - player.x) || 1;
+        n.hit = true;
+        n.hazT = 0;
+        n.vx = away * 4;
+        n.vz = -6;
+        n.spinY = away * 4;
+        shake = Math.max(shake, 0.5);
+        noiseBurst(0.5, 900, 150, 0.4);
+        toast('🛡 SHIELD SAVED YOU!');
+        continue;
+      }
       crash(n);
       return;
     }
@@ -1354,16 +1770,24 @@ function frame() {
     elapsed += dt;
     targetSpeed = Math.min(difficulty.maxSpeed,
       difficulty.startSpeed + difficulty.ramp * elapsed);
+    if (tiresBlown > 0) updateBlownTires(dt);
     const want = targetSpeed *
-      (keys.up ? BOOST_MULT : keys.down ? BRAKE_MULT : 1);
+      (keys.up ? BOOST_MULT : keys.down ? BRAKE_MULT : 1) *
+      (tiresBlown > 0 ? 0.55 : 1);
     curSpeed += THREE.MathUtils.clamp(want - curSpeed, -38 * dt, 16 * dt);
     distance += curSpeed * dt;
     score = Math.floor(distance * difficulty.scoreMult) + bonus;
 
+    if (distance > pickupNext) {
+      spawnPickup();
+      pickupNext = Math.max(pickupNext, distance) + 300 + Math.random() * 250;
+    }
+
     scrollWorld(curSpeed * dt);
     updatePlayer(dt);
     updateNpcs(dt, curSpeed, true);
-    updateCop(dt, curSpeed);
+    updateCops(dt, curSpeed);
+    updateWorldItems(dt, curSpeed, true);
     checkCollisions();
     updateEngine(curSpeed);
     updateCamera(dt);
@@ -1377,13 +1801,43 @@ function frame() {
     curSpeed = Math.max(0, curSpeed - 26 * dt);
     scrollWorld(curSpeed * dt);
     updateNpcs(dt, curSpeed, false);
-    updateCop(dt, curSpeed);
+    updateCops(dt, curSpeed);
+    updateWorldItems(dt, curSpeed, false);
     updateCrashFx(dt);
     updateCamera(dt);
   }
 
+  if (state !== STATE.PAUSED) applyDayNight(dt);
   updateParticles(dt);
+  updateSmoke(dt);
+  updateDebris(dt);
+
+  renderer.shadowMap.needsUpdate = true;
+  renderer.setViewport(0, 0, window.innerWidth, window.innerHeight);
+  if (DEV.has('mirrorfull')) {   // debug: show the mirror cam fullscreen
+    mirrorCam.aspect = window.innerWidth / window.innerHeight;
+    mirrorCam.updateProjectionMatrix();
+    mirrorCam.position.set(player.x, 2.5, -0.6);
+    mirrorCam.lookAt(player.x, 0.2, 26);
+    renderer.render(scene, mirrorCam);
+    return;
+  }
   renderer.render(scene, camera);
+
+  // rear-view mirror: a second, small render looking backwards
+  if (state !== STATE.MENU && !DEV.has('nomirror')) {
+    const mw = THREE.MathUtils.clamp(window.innerWidth * 0.3, 200, 400);
+    const mh = mw / 3.2;
+    const mx = (window.innerWidth - mw) / 2;
+    const my = window.innerHeight - 78 - mh;   // 78px from the top edge
+    mirrorCam.position.set(player.x, 2.5, -0.6);
+    mirrorCam.lookAt(player.x, 0.2, 26);   // watch the road right behind you
+    renderer.setScissorTest(true);
+    renderer.setViewport(mx, my, mw, mh);
+    renderer.setScissor(mx, my, mw, mh);
+    renderer.render(scene, mirrorCam);
+    renderer.setScissorTest(false);
+  }
 }
 
 /* ---------------- Loading sequence ---------------- */
@@ -1431,6 +1885,7 @@ function runLoader(i) {
 
 $('startBtn').addEventListener('click', () => { ensureAudio(); startGame(); });
 $('restartBtn').addEventListener('click', () => { ensureAudio(); startGame(); });
+$('oilBtn').addEventListener('click', () => { ensureAudio(); deployOil(); });
 
 function setDifficulty(key) {
   difficulty = DIFFICULTIES[key] || DIFFICULTIES.normal;
