@@ -26,7 +26,8 @@ URL.)
 | Mute | M | — |
 
 Score = metres driven. Squeeze past a car with less than half a metre
-to spare for a **NEAR MISS +100** bonus. Your best score is saved in
+to spare for a **NEAR MISS +100** bonus. Outrun a police chase — or
+bait the cop into crashing — for **+500**. Your best score is saved in
 the browser.
 
 ## How it works — a guided tour
@@ -80,13 +81,39 @@ Each NPC is a little state bundle: lane, speed, blinker timer. Their
    blinker and slide over.
 
 Spawning has a **fairness rule**: it never fills your last open lane,
-so there is always a way through.
+so there is always a way through. Two more fairness rules protect you:
+cars never merge into your lane right on top of you, and traffic
+coming up behind you brakes instead of rear-ending you.
 
-### Collisions (section 10, `checkCollisions`)
+### The police (section 6b)
 
-Just axis-aligned box overlap in x/z, shrunk by ~30 cm so only real
-hits count — near misses are supposed to feel scary, not unfair. Crash
-= particle explosion, camera shake, the car tumbles, and the run ends.
+Every ~500 m a police cruiser spawns behind you — siren wailing,
+red/blue light bar flashing — and chases at about 12% more than your
+speed while steering toward you. Three ways it can end:
+
+- it **rams you** → BUSTED, run over;
+- you **boost** and stay ahead until it gives up → **+500**;
+- you weave through traffic and the cop **crashes into an NPC** → **+500**.
+
+The siren is a single oscillator wobbling between two notes, and it
+gets louder as the cruiser closes in — check your mirrors.
+
+### Collisions and the crash (section 10, `checkCollisions` + `crash`)
+
+Collision detection is just axis-aligned box overlap in x/z, shrunk by
+~30 cm so only real hits count. The crash itself is choreographed for
+realism:
+
+- a moment of **slow motion** on impact, then time speeds back up;
+- your car **crumples** (a quick scale tweak), tumbles and is thrown;
+- **debris** flies: loose wheels, the bumper, glass shards, sparks;
+- an orange **fireball flash** (a point light), then drifting smoke;
+- the car you hit is **shoved aside**, spins out and turns on its
+  hazard lights;
+- the world doesn't freeze — your wreck grinds to a halt while
+  traffic brakes behind the crash and oncoming cars stream past;
+- the sound is four layers: a deep thump, metal crunch, glass
+  shatter, and a clunk when the wreck lands.
 
 ### Sound (section 8) — no audio files!
 
@@ -120,7 +147,7 @@ The game title lives in `index.html`.
 
 - Power-ups on the road (shield, magnet, slow-mo)
 - Day/night cycle (animate the sun and sky colors)
-- Police chase mode
+- Wanted levels: more cruisers the longer you stay "wanted"
 - Replace box-cars with real 3D models (`GLTFLoader` + free models
   from [Kenney](https://kenney.nl/assets) or Sketchfab)
 - Curved roads (bend the world sideways with a sine of distance)

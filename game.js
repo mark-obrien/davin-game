@@ -52,7 +52,7 @@ let best = Number(localStorage.getItem('turboRush3dBest') || 0);
 let targetSpeed = START_SPEED; // what the difficulty ramp wants
 let curSpeed = 0;              // what the car is actually doing
 let shake = 0;                 // camera shake time left
-let crashAnim = null;          // player tumble animation during a crash
+let crashFx = null;            // everything animating during a crash
 
 const player = { x: laneX(1), latVel: 0, group: null };
 let npcs = [];                 // active NPC cars
@@ -66,6 +66,7 @@ const ui = {
   toast: $('toast'), loading: $('loading'), loadfill: $('loadfill'),
   loadstep: $('loadstep'), menu: $('menu'), gameover: $('gameover'),
   paused: $('paused'), finalScore: $('finalScore'), newBest: $('newBest'),
+  overTitle: $('overTitle'),
 };
 
 /* ---------------- 3. Renderer, scene, camera, lights ---------------- */
@@ -464,6 +465,7 @@ function spawnNpc(dir, lane) {
     speed: dir === 1 ? 18 + Math.random() * 10 : laneSpeed,
     halfW: g.userData.halfW, halfL: g.userData.halfL,
     blinkT: 0, changeCd: 4 + Math.random() * 8, passed: false,
+    hit: false, hazT: 0, vx: 0, vz: 0, spinY: 0,
   };
   npcs.push(n);
 }
@@ -515,6 +517,37 @@ function updateNpcs(dt, playerSpeed, playing) {
   }
 
   for (const n of npcs) {
+    // a car that got hit in a crash: shoved, spinning, hazards on
+    if (n.hit) {
+      n.hazT += dt;
+      const on = n.hazT % 0.8 < 0.4;
+      for (const b of n.g.userData.blinkL) b.visible = on;
+      for (const b of n.g.userData.blinkR) b.visible = on;
+      n.speed = Math.max(0, n.speed - 22 * dt);
+      n.x += n.vx * dt;
+      n.z += (playerSpeed - n.speed) * dt + n.vz * dt;
+      const damp = Math.max(0, 1 - 2.5 * dt);
+      n.vx *= damp;
+      n.vz *= damp;
+      n.g.rotation.y += n.spinY * dt;
+      n.spinY *= Math.max(0, 1 - 1.8 * dt);
+      n.g.position.set(n.x, 0, n.z);
+      continue;
+    }
+
+    // brake hard behind the player's wreck instead of driving through it
+    if (crashFx && n.dir === -1 && Math.abs(n.x - player.x) < 2.4 &&
+        n.z < 0 && n.z > -18) {
+      n.speed += (playerSpeed - n.speed) * Math.min(1, 3 * dt);
+    }
+
+    // cars coming up behind you brake too — braking mustn't mean
+    // getting rear-ended by traffic you already overtook
+    if (playing && n.dir === -1 && n.z > 2 && n.z < 20 &&
+        Math.abs(n.x - player.x) < 2.4 && n.speed > playerSpeed * 0.95) {
+      n.speed += (playerSpeed * 0.95 - n.speed) * Math.min(1, 4 * dt);
+    }
+
     // keep a safe following distance from the car ahead (simple AI)
     for (const m of npcs) {
       if (m === n || m.dir !== n.dir) continue;
@@ -584,9 +617,131 @@ function updateNpcs(dt, playerSpeed, playing) {
 }
 
 function laneClearFor(n, lane) {
+  // never merge into the player's lane right where the player is
+  if (n.dir === -1 && Math.abs(laneX(lane) - player.x) < 2.6 &&
+      Math.abs(n.z) < 30) return false;
   return !npcs.some((m) => m !== n && m.dir === n.dir &&
     (m.lane === lane || m.targetLane === lane) &&
     Math.abs(m.z - n.z) < 20);
+}
+
+/* ---------------- 6b. Police chase ---------------- */
+
+let cop = null;          // the active chase (one cruiser at a time)
+let copCar = null;       // the cruiser model, built once and reused
+let nextCopAt = 500;     // distance (m) at which the next chase begins
+let siren = null;
+
+function buildCopCar() {
+  const g = buildCar('sedan');
+  g.userData.paint.color.set(0xf2f4f6);   // white cruiser
+  const barBase = new THREE.Mesh(
+    new THREE.BoxGeometry(0.9, 0.1, 0.42), carShared.dark);
+  barBase.position.set(0, 1.42, 0.15);
+  const red = new THREE.Mesh(
+    new THREE.BoxGeometry(0.4, 0.16, 0.4),
+    new THREE.MeshStandardMaterial(
+      { color: 0xff2222, emissive: 0xff0000, emissiveIntensity: 2.5 }));
+  red.position.set(-0.24, 1.54, 0.15);
+  const blue = new THREE.Mesh(
+    new THREE.BoxGeometry(0.4, 0.16, 0.4),
+    new THREE.MeshStandardMaterial(
+      { color: 0x2244ff, emissive: 0x0033ff, emissiveIntensity: 2.5 }));
+  blue.position.set(0.24, 1.54, 0.15);
+  g.add(barBase, red, blue);
+  g.userData.red = red;
+  g.userData.blue = blue;
+  return g;
+}
+
+function spawnCop() {
+  if (!copCar) {
+    copCar = buildCopCar();
+    scene.add(copCar);
+  }
+  copCar.visible = true;
+  cop = { g: copCar, x: player.x, z: 42, speed: curSpeed, t: 0,
+          chaseFor: 13 + Math.random() * 5, retreating: false };
+  startSiren();
+  toast('🚨 POLICE! OUTRUN THEM!');
+}
+
+function dismissCop(escaped) {
+  copCar.visible = false;
+  cop = null;
+  stopSiren();
+  nextCopAt = distance + 1300 + Math.random() * 800;
+  if (escaped) {
+    bonus += 500;
+    toast('YOU LOST THEM! +500');
+  }
+}
+
+function updateCop(dt, playerSpeed) {
+  if (!cop) {
+    if (state === STATE.PLAYING && distance > nextCopAt) spawnCop();
+    return;
+  }
+  cop.t += dt;
+
+  // flashing light bar
+  const phase = Math.floor(cop.t * 7) % 2 === 0;
+  cop.g.userData.red.visible = phase;
+  cop.g.userData.blue.visible = !phase;
+
+  if (state === STATE.OVER) {   // after a crash the cruiser pulls up
+    cop.speed = Math.max(0, cop.speed - 20 * dt);
+    cop.z = Math.max(6.5, cop.z + (playerSpeed - cop.speed) * dt);
+    cop.g.position.set(cop.x, 0, cop.z);
+    return;
+  }
+
+  if (!cop.retreating && cop.t > cop.chaseFor) cop.retreating = true;
+
+  // chase: clearly faster than you — boost to escape. retreat: give up.
+  const wantSpeed = cop.retreating ? playerSpeed * 0.75
+                                   : playerSpeed * 1.12 + 3;
+  cop.speed += (wantSpeed - cop.speed) * Math.min(1, 1.2 * dt);
+  cop.z += (playerSpeed - cop.speed) * dt;
+  if (cop.z < 3.8) cop.z = 3.8;   // right on your bumper
+
+  // steers toward you, but slower than you can dodge
+  const maxLat = 8 * dt;
+  cop.x += THREE.MathUtils.clamp(player.x - cop.x, -maxLat, maxLat);
+
+  cop.g.position.set(cop.x, 0, cop.z);
+  const spin = (cop.speed / 0.34) * dt;
+  for (const w of cop.g.userData.wheels) w.rotation.x -= spin;
+
+  updateSiren();
+
+  // rammed you → busted
+  if (Math.abs(cop.x - player.x) < 1.7 && cop.z < 4.3) {
+    crash({ x: cop.x, z: cop.z, halfW: 0.95, halfL: 2.25,
+            hit: false, hazT: 0, vx: 0, vz: 0, spinY: 0 }, true);
+    return;
+  }
+
+  // the cop can crash into traffic — bait them into it!
+  for (const n of npcs) {
+    if (n.dir !== -1 || n.hit) continue;
+    if (Math.abs(n.x - cop.x) < n.halfW + 0.75 &&
+        Math.abs(n.z - cop.z) < n.halfL + 1.95) {
+      n.hit = true;
+      n.hazT = 0;
+      const away = Math.sign(n.x - cop.x) || 1;
+      n.vx = away * 3;
+      n.vz = -5;
+      n.spinY = away * 3;
+      noiseBurst(0.5, 700, 120, 0.35);
+      dismissCop(false);
+      bonus += 500;
+      toast('THE COPS CRASHED! +500');
+      return;
+    }
+  }
+
+  if (cop.retreating && cop.z > 40) dismissCop(true);
 }
 
 /* ---------------- 7. Crash particles ---------------- */
@@ -633,6 +788,148 @@ function updateParticles(dt) {
     p.m.scale.setScalar(Math.max(0.01, 0.25 * (p.life / p.maxLife)));
     if (p.life <= 0) p.m.visible = false;
   }
+}
+
+/* --- smoke, fire flash and heavy debris for the crash --- */
+
+let flash;                   // orange point light: the impact fireball
+const smokePool = [];
+const debrisPool = [];       // loose wheels, a bumper, glass shards
+let shardMat;
+
+function initSmoke() {
+  flash = new THREE.PointLight(0xff8844, 0, 16);
+  scene.add(flash);
+  const geo = new THREE.IcosahedronGeometry(1, 1);
+  for (let i = 0; i < 26; i++) {
+    const mat = new THREE.MeshBasicMaterial(
+      { color: 0x565b62, transparent: true, opacity: 0, depthWrite: false });
+    const m = new THREE.Mesh(geo, mat);
+    m.visible = false;
+    scene.add(m);
+    smokePool.push({ m, mat, vel: new THREE.Vector3(),
+                     age: 0, life: 0, baseO: 0.5 });
+  }
+}
+
+function spawnSmoke(x, y, z, fire) {
+  const p = smokePool.find((s) => s.life <= 0);
+  if (!p) return;
+  p.age = 0;
+  p.life = fire ? 0.5 : 1.4 + Math.random() * 1.1;
+  p.baseO = fire ? 0.95 : 0.5;
+  p.m.visible = true;
+  p.m.position.set(x + (Math.random() - 0.5) * 1.2,
+                   y + (Math.random() - 0.5) * 0.5,
+                   z + (Math.random() - 0.5) * 1.6);
+  p.vel.set((Math.random() - 0.5) * 1.2, 1.2 + Math.random() * 1.4,
+            0.6 + (Math.random() - 0.5));
+  p.mat.color.set(fire
+    ? (Math.random() < 0.5 ? 0xff8a3c : 0xffb340)
+    : [0x43474d, 0x585d64, 0x7b8189][(Math.random() * 3) | 0]);
+  p.mat.opacity = p.baseO;
+  p.m.scale.setScalar(fire ? 0.35 : 0.5);
+}
+
+function updateSmoke(dt) {
+  for (const p of smokePool) {
+    if (p.life <= 0) continue;
+    p.age += dt;
+    if (p.age >= p.life) { p.life = 0; p.m.visible = false; continue; }
+    p.m.position.addScaledVector(p.vel, dt);
+    const k = p.age / p.life;
+    p.m.scale.setScalar(0.35 + k * 1.9);   // puffs grow as they rise
+    p.mat.opacity = p.baseO * (1 - k) ** 1.1;
+  }
+}
+
+function initDebris() {
+  shardMat = new THREE.MeshBasicMaterial(
+    { color: 0xcfe8ff, transparent: true, opacity: 0.9 });
+  const items = [];
+  const tireGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.22, 14);
+  items.push(new THREE.Mesh(tireGeo, carShared.tire));
+  items.push(new THREE.Mesh(tireGeo, carShared.tire));
+  items.push(new THREE.Mesh(                                  // bumper
+    new THREE.BoxGeometry(1.5, 0.12, 0.2), carShared.dark));
+  const shardGeo = new THREE.BoxGeometry(0.16, 0.02, 0.16);
+  for (let i = 0; i < 10; i++) items.push(new THREE.Mesh(shardGeo, shardMat));
+  for (const m of items) {
+    m.visible = false;
+    m.castShadow = true;
+    scene.add(m);
+    debrisPool.push({ m, vel: new THREE.Vector3(), spin: new THREE.Vector3() });
+  }
+}
+
+function launchDebris(x, y, z) {
+  shardMat.opacity = 0.9;
+  for (const d of debrisPool) {
+    d.m.visible = true;
+    d.m.position.set(x, y, z);
+    d.m.rotation.set(0, 0, 0);
+    const a = Math.random() * Math.PI * 2;
+    const out = 3 + Math.random() * 7;
+    d.vel.set(Math.cos(a) * out, 4 + Math.random() * 6,
+              Math.sin(a) * out - 3);
+    d.spin.set(Math.random() * 12, Math.random() * 12, Math.random() * 12);
+  }
+}
+
+function updateDebris(dt) {
+  shardMat.opacity = Math.max(0, shardMat.opacity - 0.35 * dt);
+  for (const d of debrisPool) {
+    if (!d.m.visible) continue;
+    d.vel.y -= 22 * dt;
+    d.m.position.addScaledVector(d.vel, dt);
+    if (d.m.position.y < 0.15) {
+      d.m.position.y = 0.15;
+      d.vel.y *= -0.4;
+      d.vel.x *= 0.75;
+      d.vel.z *= 0.75;
+      d.spin.multiplyScalar(0.7);
+    }
+    d.m.rotation.x += d.spin.x * dt;
+    d.m.rotation.y += d.spin.y * dt;
+    d.m.rotation.z += d.spin.z * dt;
+  }
+}
+
+// Runs every frame after a crash: tumbles the wreck, flickers the
+// fireball light, keeps pumping out smoke.
+function updateCrashFx(dt) {
+  if (!crashFx) return;
+  const g = player.group;
+  g.position.x += crashFx.vx * dt;
+  g.position.y += crashFx.vy * dt;
+  crashFx.vy -= 22 * dt;
+  if (g.position.y <= 0) {
+    g.position.y = 0;
+    crashFx.vy *= -0.35;
+    crashFx.vx *= 0.7;
+    const damp = Math.max(0, 1 - 4 * dt);   // stop tumbling once grounded
+    crashFx.spinX *= damp;
+    crashFx.spinY *= damp;
+    crashFx.spinZ *= damp;
+  }
+  g.rotation.x += crashFx.spinX * dt;
+  g.rotation.y += crashFx.spinY * dt;
+  g.rotation.z += crashFx.spinZ * dt;
+  player.x = g.position.x;   // the camera keeps tracking the wreck
+
+  flash.position.set(g.position.x, 1.2, g.position.z);
+  flash.intensity =
+    Math.max(0, 4.5 - crashFx.t * 4) * (0.7 + Math.random() * 0.6);
+
+  if (crashFx.t < 5.5) {     // fireball puffs first, then grey smoke
+    crashFx.emit -= dt;
+    if (crashFx.emit <= 0) {
+      crashFx.emit = 0.07;
+      spawnSmoke(g.position.x, 0.9, g.position.z, crashFx.t < 0.45);
+    }
+  }
+  updateSmoke(dt);
+  updateDebris(dt);
 }
 
 /* ---------------- 8. Audio ---------------- */
@@ -689,9 +986,9 @@ function updateEngine(speed) {
   engine.g.gain.setTargetAtTime(0.045 + Math.min(0.03, speed * 0.0005), t, 0.1);
 }
 
-function tone(freq, dur, type, vol, slide) {
+function tone(freq, dur, type, vol, slide, at) {
   if (!actx) return;
-  const t = actx.currentTime;
+  const t = actx.currentTime + (at || 0);
   const o = actx.createOscillator();
   const g = actx.createGain();
   o.type = type || 'square';
@@ -709,21 +1006,68 @@ function tone(freq, dur, type, vol, slide) {
 const sfxNearMiss = () => tone(700, 0.16, 'triangle', 0.1, 600);
 const sfxStart = () => tone(180, 0.5, 'sawtooth', 0.09, 320);
 
-function sfxCrash() {
+/* --- police siren: one oscillator wailing between two notes --- */
+
+function startSiren() {
+  if (!actx || siren) return;
+  const o = actx.createOscillator();
+  o.type = 'triangle';
+  const g = actx.createGain();
+  g.gain.value = 0;
+  o.connect(g);
+  g.connect(master);
+  o.start();
+  siren = { o, g };
+}
+
+function stopSiren() {
+  if (!siren) return;
+  const s = siren;
+  siren = null;
+  s.g.gain.setTargetAtTime(0, actx.currentTime, 0.1);
+  setTimeout(() => s.o.stop(), 500);
+}
+
+function updateSiren() {
+  if (!siren || !cop) return;
+  const t = actx.currentTime;
+  const freq = Math.floor(cop.t * 1.4) % 2 ? 660 : 990;   // wee-woo
+  siren.o.frequency.setTargetAtTime(freq, t, 0.03);
+  // louder the closer the cruiser gets
+  const vol = THREE.MathUtils.clamp(0.07 - (cop.z / 42) * 0.055, 0.015, 0.07);
+  siren.g.gain.setTargetAtTime(vol, t, 0.1);
+}
+
+function noiseBurst(dur, from, to, vol, band, at) {
   if (!actx) return;
-  const dur = 0.6;
+  const t = actx.currentTime + (at || 0);
   const buf = actx.createBuffer(1, actx.sampleRate * dur, actx.sampleRate);
   const d = buf.getChannelData(0);
   for (let i = 0; i < d.length; i++) {
-    d[i] = (Math.random() * 2 - 1) * (1 - i / d.length) ** 1.6;
+    d[i] = (Math.random() * 2 - 1) * (1 - i / d.length) ** 1.4;
   }
   const src = actx.createBufferSource();
   src.buffer = buf;
+  const f = actx.createBiquadFilter();
+  f.type = band || 'lowpass';
+  f.frequency.setValueAtTime(from, t);
+  f.frequency.exponentialRampToValueAtTime(Math.max(40, to), t + dur);
+  f.Q.value = band === 'bandpass' ? 1.5 : 0.8;
   const g = actx.createGain();
-  g.gain.value = 0.5;
-  src.connect(g);
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  src.connect(f);
+  f.connect(g);
   g.connect(master);
-  src.start();
+  src.start(t);
+}
+
+// A crash is several sounds layered, like the real thing
+function sfxCrash() {
+  tone(65, 0.5, 'sine', 0.55, -35);                     // deep impact thump
+  noiseBurst(0.75, 900, 110, 0.5);                      // metal crunch
+  noiseBurst(0.3, 5200, 2400, 0.22, 'bandpass', 0.04);  // glass shatter
+  noiseBurst(0.4, 480, 90, 0.3, 'lowpass', 0.5);        // the wreck lands
 }
 
 /* ---------------- 9. Input ---------------- */
@@ -803,12 +1147,18 @@ function resetRun(menuMode) {
   targetSpeed = START_SPEED;
   curSpeed = menuMode ? 22 : START_SPEED * 0.4;
   shake = 0;
-  crashAnim = null;
+  crashFx = null;
   player.x = laneX(1);
   player.latVel = 0;
   player.group.position.set(player.x, 0, 0);
   player.group.rotation.set(0, 0, 0);
+  player.group.scale.set(1, 1, 1);      // un-crumple
   player.group.visible = true;
+  if (flash) flash.intensity = 0;
+  for (const s of smokePool) { s.life = 0; s.m.visible = false; }
+  for (const d of debrisPool) d.m.visible = false;
+  if (cop) { copCar.visible = false; cop = null; stopSiren(); }
+  nextCopAt = 400 + Math.random() * 200;
   for (const n of npcs) releaseNpc(n);
   npcs = [];
   sameTimer = 1.2;
@@ -849,14 +1199,34 @@ function togglePause() {
   }
 }
 
-function crash(n) {
+function crash(n, busted) {
   state = STATE.OVER;
   stopEngine();
+  stopSiren();
   sfxCrash();
-  shake = 1.0;
-  explode((player.x + n.x) / 2, 0.9, (0 + n.z) / 2);
-  crashAnim = { t: 0, vy: 6.5,
-    spinX: (Math.random() - 0.5) * 7, spinZ: (Math.random() - 0.5) * 7 };
+  shake = 1.4;
+  const hitX = (player.x + n.x) / 2;
+  const hitZ = n.z / 2;
+  explode(hitX, 0.9, hitZ);
+  launchDebris(hitX, 0.8, hitZ);
+
+  // the car you hit is shoved aside, spins out, hazards on
+  const away = Math.sign(n.x - player.x) || 1;
+  n.hit = true;
+  n.hazT = 0;
+  n.vx = away * (2.5 + Math.random() * 2);
+  n.vz = -(4 + Math.random() * 4);
+  n.spinY = away * (2 + Math.random() * 2.5);
+
+  // your car crumples and is thrown the other way
+  player.group.scale.set(1.04, 0.93, 0.88);
+  crashFx = { t: 0, emit: 0,
+    vx: -away * (2.5 + Math.random() * 2), vy: 5.5,
+    spinX: (Math.random() - 0.5) * 6,
+    spinY: -away * (2.5 + Math.random() * 3),
+    spinZ: (Math.random() - 0.5) * 6 };
+
+  ui.overTitle.textContent = busted ? 'BUSTED!' : 'CRASHED!';
   if (score > best) {
     best = score;
     localStorage.setItem('turboRush3dBest', best);
@@ -868,7 +1238,7 @@ function crash(n) {
     `Score ${score} — you drove ${(distance / 1000).toFixed(2)} km`;
   setTimeout(() => {
     if (state === STATE.OVER) ui.gameover.classList.remove('hidden');
-  }, 1100);
+  }, 2200);
 }
 
 function updatePlayer(dt) {
@@ -896,6 +1266,7 @@ function updatePlayer(dt) {
 }
 
 function checkCollisions() {
+  if (state !== STATE.PLAYING) return;   // the cop may have busted us already
   for (const n of npcs) {
     if (Math.abs(n.z) > 8) continue;
     const hitW = (PLAYER_HALF_W + n.halfW) - 0.25;   // small forgiveness
@@ -917,7 +1288,11 @@ function updateCamera(dt) {
     camera.position.x += (Math.random() - 0.5) * shake * 0.7;
     camera.position.y += (Math.random() - 0.5) * shake * 0.5;
   }
-  camera.lookAt(player.x * 0.85, 1.1, -14);
+  if (state === STATE.OVER) {
+    camera.lookAt(player.x * 0.9, 0.8, player.group.position.z);
+  } else {
+    camera.lookAt(player.x * 0.85, 1.1, -14);
+  }
   const fov = 60 + Math.max(0, curSpeed - START_SPEED) * 0.28;
   if (Math.abs(camera.fov - fov) > 0.1) {
     camera.fov = fov;
@@ -929,7 +1304,14 @@ const clock = new THREE.Clock();
 
 function frame() {
   requestAnimationFrame(frame);
-  const dt = Math.min(clock.getDelta(), 0.05);
+  const rawDt = Math.min(clock.getDelta(), 0.05);
+  let dt = rawDt;
+  if (state === STATE.OVER && crashFx) {
+    crashFx.t += rawDt;
+    // brief slow motion right after impact, then back to full speed
+    dt = rawDt * (crashFx.t < 0.7 ? 0.35
+      : Math.min(1, 0.35 + (crashFx.t - 0.7) * 1.1));
+  }
 
   if (state === STATE.MENU) {
     // attract mode: the world cruises along behind the menu
@@ -949,6 +1331,7 @@ function frame() {
     scrollWorld(curSpeed * dt);
     updatePlayer(dt);
     updateNpcs(dt, curSpeed, true);
+    updateCop(dt, curSpeed);
     checkCollisions();
     updateEngine(curSpeed);
     updateCamera(dt);
@@ -956,17 +1339,14 @@ function frame() {
     ui.score.textContent = score;
     ui.speed.textContent = `${Math.round(curSpeed * 3.6)} km/h`;
   } else if (state === STATE.OVER) {
-    if (crashAnim) {
-      // the car tumbles for a moment after impact
-      crashAnim.t += dt;
-      const g = player.group;
-      g.position.y += crashAnim.vy * dt;
-      crashAnim.vy -= 20 * dt;
-      if (g.position.y < 0) { g.position.y = 0; crashAnim.vy *= -0.35; }
-      g.rotation.x += crashAnim.spinX * dt;
-      g.rotation.z += crashAnim.spinZ * dt;
-      if (crashAnim.t > 1.4) crashAnim = null;
-    }
+    // the world doesn't freeze: your wreck grinds to a halt while the
+    // traffic around it keeps living — cars brake behind the crash,
+    // oncoming traffic streams past
+    curSpeed = Math.max(0, curSpeed - 26 * dt);
+    scrollWorld(curSpeed * dt);
+    updateNpcs(dt, curSpeed, false);
+    updateCop(dt, curSpeed);
+    updateCrashFx(dt);
     updateCamera(dt);
   }
 
@@ -982,6 +1362,8 @@ const LOAD_STEPS = [
   ['Building your car…', () => { initCarShared(); initPlayer(); }],
   ['Hiring NPC drivers…', () => {
     initParticles();
+    initSmoke();
+    initDebris();
     resetRun(true);   // also seeds traffic for the menu's attract mode
   }],
   ['Final checks…', () => {
