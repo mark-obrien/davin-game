@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Turbo Rush 3D</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="hud" class="hidden">
+    <div class="panel"><span class="label">SCORE</span><span id="score">0</span></div>
+    <div class="panel"><span class="label">SPEED</span><span id="speed">0</span></div>
+    <div class="panel"><span class="label">BEST</span><span id="best">0</span></div>
+  </div>
+
+  <div id="toast"></div>
+
+  <div id="loading" class="screen">
+    <h1>TURBO RUSH 3D</h1>
+    <div class="loadbar"><div id="loadfill"></div></div>
+    <p id="loadstep" class="sub">Warming up the engine&hellip;</p>
+    <p class="hint" id="loadtip">Tip: squeeze between two cars for a NEAR MISS bonus</p>
+  </div>
+
+  <div id="menu" class="screen hidden">
+    <h1>TURBO RUSH 3D</h1>
+    <p class="sub">Dodge the traffic. Survive the highway.</p>
+    <p class="controls">
+      Steer: &larr; &rarr; or A / D &nbsp;&bull;&nbsp; Boost: &uarr; &nbsp;&bull;&nbsp; Brake: &darr;<br>
+      Touch screens: hold the left / right half of the screen<br>
+      P = pause &nbsp;&bull;&nbsp; M = mute
+    </p>
+    <button id="startBtn">START ENGINE</button>
+    <p class="hint">or press Enter</p>
+  </div>
+
+  <div id="gameover" class="screen hidden">
+    <h1>CRASHED!</h1>
+    <p id="finalScore" class="sub"></p>
+    <p id="newBest" class="newbest hidden">&#9733; NEW BEST &#9733;</p>
+    <button id="restartBtn">DRIVE AGAIN</button>
+    <p class="hint">or press Enter</p>
+  </div>
+
+  <div id="paused" class="screen hidden">
+    <h1>PAUSED</h1>
+    <p class="hint">press P to resume</p>
+  </div>
+
+  <script src="lib/three.min.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
