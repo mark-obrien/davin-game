@@ -20,11 +20,21 @@ const MEDIAN_HALF = 0.6;       // half-width of the central barrier strip
 const ROAD_HALF = MEDIAN_HALF + LANES * LANE_W + 0.9;  // paved half-width
 const ROAD_LEN = 420;          // how much road we keep around the player
 
-const START_SPEED = 25;        // m/s  (= 90 km/h)
-const MAX_SPEED = 64;          // m/s  (= 230 km/h)
-const SPEED_RAMP = 0.45;       // m/s gained every second — the difficulty
 const BOOST_MULT = 1.3;        // holding ↑
 const BRAKE_MULT = 0.5;        // holding ↓
+
+// Difficulty presets — picked on the menu. Speeds are m/s.
+const DIFFICULTIES = {
+  easy: { label: 'EASY', startSpeed: 20, maxSpeed: 45, ramp: 0.3,
+          spawnBase: 2.6, spawnMin: 1.0, copSpeed: 1.08, copBoost: 2,
+          copEvery: 900, scoreMult: 0.7 },
+  normal: { label: 'NORMAL', startSpeed: 25, maxSpeed: 64, ramp: 0.45,
+            spawnBase: 2.2, spawnMin: 0.75, copSpeed: 1.12, copBoost: 3,
+            copEvery: 500, scoreMult: 1 },
+  hard: { label: 'HARD', startSpeed: 30, maxSpeed: 78, ramp: 0.65,
+          spawnBase: 1.7, spawnMin: 0.55, copSpeed: 1.16, copBoost: 4,
+          copEvery: 350, scoreMult: 1.4 },
+};
 
 const STEER_ACCEL = 42;        // sideways acceleration, m/s²
 const STEER_MAX = 13;          // max sideways speed, m/s
@@ -49,7 +59,8 @@ let distance = 0;              // metres driven
 let bonus = 0;                 // points from near misses
 let score = 0;
 let best = Number(localStorage.getItem('turboRush3dBest') || 0);
-let targetSpeed = START_SPEED; // what the difficulty ramp wants
+let difficulty = DIFFICULTIES.normal;
+let targetSpeed = difficulty.startSpeed; // what the difficulty ramp wants
 let curSpeed = 0;              // what the car is actually doing
 let shake = 0;                 // camera shake time left
 let crashFx = null;            // everything animating during a crash
@@ -508,7 +519,8 @@ function updateNpcs(dt, playerSpeed, playing) {
   sameTimer -= dt;
   if (sameTimer <= 0) {
     trySpawnSame();
-    sameTimer = Math.max(0.75, 2.2 - elapsed * 0.015) * (0.8 + Math.random() * 0.5);
+    sameTimer = Math.max(difficulty.spawnMin,
+      difficulty.spawnBase - elapsed * 0.015) * (0.8 + Math.random() * 0.5);
   }
   oncTimer -= dt;
   if (oncTimer <= 0) {
@@ -670,7 +682,7 @@ function dismissCop(escaped) {
   copCar.visible = false;
   cop = null;
   stopSiren();
-  nextCopAt = distance + 1300 + Math.random() * 800;
+  nextCopAt = distance + difficulty.copEvery * 2.6 + Math.random() * 600;
   if (escaped) {
     bonus += 500;
     toast('YOU LOST THEM! +500');
@@ -700,7 +712,7 @@ function updateCop(dt, playerSpeed) {
 
   // chase: clearly faster than you — boost to escape. retreat: give up.
   const wantSpeed = cop.retreating ? playerSpeed * 0.75
-                                   : playerSpeed * 1.12 + 3;
+    : playerSpeed * difficulty.copSpeed + difficulty.copBoost;
   cop.speed += (wantSpeed - cop.speed) * Math.min(1, 1.2 * dt);
   cop.z += (playerSpeed - cop.speed) * dt;
   if (cop.z < 3.8) cop.z = 3.8;   // right on your bumper
@@ -897,24 +909,43 @@ function updateDebris(dt) {
 
 // Runs every frame after a crash: tumbles the wreck, flickers the
 // fireball light, keeps pumping out smoke.
+const _rotM = new THREE.Matrix4();
+const _bx = new THREE.Vector3();
+const _by = new THREE.Vector3();
+const _bz = new THREE.Vector3();
+
 function updateCrashFx(dt) {
   if (!crashFx) return;
   const g = player.group;
   g.position.x += crashFx.vx * dt;
   g.position.y += crashFx.vy * dt;
   crashFx.vy -= 22 * dt;
-  if (g.position.y <= 0) {
-    g.position.y = 0;
-    crashFx.vy *= -0.35;
-    crashFx.vx *= 0.7;
+  g.rotation.x += crashFx.spinX * dt;
+  g.rotation.y += crashFx.spinY * dt;
+  g.rotation.z += crashFx.spinZ * dt;
+
+  // Keep the tumbling body above the road. The car rotates around its
+  // base point, so a naive y >= 0 clamp lets half of it swing through
+  // the asphalt. Instead, project the rotated bounding box (half
+  // extents 0.95 × 0.7 × 2.25 around a centre 0.7 up) onto the up axis
+  // and rest the car on its lowest point — it can even settle on its
+  // roof at the right height.
+  _rotM.makeRotationFromEuler(g.rotation);
+  _rotM.extractBasis(_bx, _by, _bz);
+  const support = 0.95 * Math.abs(_bx.y) + 0.7 * Math.abs(_by.y) +
+                  2.25 * Math.abs(_bz.y);
+  const lowest = g.position.y + 0.7 * _by.y - support;
+  if (lowest < 0) {
+    g.position.y -= lowest;
+    if (crashFx.vy < 0) {
+      crashFx.vy *= -0.35;
+      crashFx.vx *= 0.7;
+    }
     const damp = Math.max(0, 1 - 4 * dt);   // stop tumbling once grounded
     crashFx.spinX *= damp;
     crashFx.spinY *= damp;
     crashFx.spinZ *= damp;
   }
-  g.rotation.x += crashFx.spinX * dt;
-  g.rotation.y += crashFx.spinY * dt;
-  g.rotation.z += crashFx.spinZ * dt;
   player.x = g.position.x;   // the camera keeps tracking the wreck
 
   flash.position.set(g.position.x, 1.2, g.position.z);
@@ -1144,8 +1175,8 @@ function resetRun(menuMode) {
   distance = 0;
   bonus = 0;
   score = 0;
-  targetSpeed = START_SPEED;
-  curSpeed = menuMode ? 22 : START_SPEED * 0.4;
+  targetSpeed = difficulty.startSpeed;
+  curSpeed = menuMode ? 22 : difficulty.startSpeed * 0.4;
   shake = 0;
   crashFx = null;
   player.x = laneX(1);
@@ -1158,7 +1189,7 @@ function resetRun(menuMode) {
   for (const s of smokePool) { s.life = 0; s.m.visible = false; }
   for (const d of debrisPool) d.m.visible = false;
   if (cop) { copCar.visible = false; cop = null; stopSiren(); }
-  nextCopAt = 400 + Math.random() * 200;
+  nextCopAt = difficulty.copEvery + Math.random() * 200;
   for (const n of npcs) releaseNpc(n);
   npcs = [];
   sameTimer = 1.2;
@@ -1235,7 +1266,7 @@ function crash(n, busted) {
     ui.newBest.classList.add('hidden');
   }
   ui.finalScore.textContent =
-    `Score ${score} — you drove ${(distance / 1000).toFixed(2)} km`;
+    `Score ${score} — you drove ${(distance / 1000).toFixed(2)} km · ${difficulty.label}`;
   setTimeout(() => {
     if (state === STATE.OVER) ui.gameover.classList.remove('hidden');
   }, 2200);
@@ -1293,7 +1324,7 @@ function updateCamera(dt) {
   } else {
     camera.lookAt(player.x * 0.85, 1.1, -14);
   }
-  const fov = 60 + Math.max(0, curSpeed - START_SPEED) * 0.28;
+  const fov = 60 + Math.max(0, curSpeed - difficulty.startSpeed) * 0.28;
   if (Math.abs(camera.fov - fov) > 0.1) {
     camera.fov = fov;
     camera.updateProjectionMatrix();
@@ -1321,12 +1352,13 @@ function frame() {
     updateCamera(dt);
   } else if (state === STATE.PLAYING) {
     elapsed += dt;
-    targetSpeed = Math.min(MAX_SPEED, START_SPEED + SPEED_RAMP * elapsed);
+    targetSpeed = Math.min(difficulty.maxSpeed,
+      difficulty.startSpeed + difficulty.ramp * elapsed);
     const want = targetSpeed *
       (keys.up ? BOOST_MULT : keys.down ? BRAKE_MULT : 1);
     curSpeed += THREE.MathUtils.clamp(want - curSpeed, -38 * dt, 16 * dt);
     distance += curSpeed * dt;
-    score = Math.floor(distance) + bonus;
+    score = Math.floor(distance * difficulty.scoreMult) + bonus;
 
     scrollWorld(curSpeed * dt);
     updatePlayer(dt);
@@ -1399,5 +1431,17 @@ function runLoader(i) {
 
 $('startBtn').addEventListener('click', () => { ensureAudio(); startGame(); });
 $('restartBtn').addEventListener('click', () => { ensureAudio(); startGame(); });
+
+function setDifficulty(key) {
+  difficulty = DIFFICULTIES[key] || DIFFICULTIES.normal;
+  localStorage.setItem('turboRush3dDiff', key in DIFFICULTIES ? key : 'normal');
+  document.querySelectorAll('.diff').forEach((b) =>
+    b.classList.toggle('selected', DIFFICULTIES[b.dataset.diff] === difficulty));
+}
+
+document.querySelectorAll('.diff').forEach((b) =>
+  b.addEventListener('click', () => { setDifficulty(b.dataset.diff); b.blur(); }));
+
+setDifficulty(localStorage.getItem('turboRush3dDiff') || 'normal');
 
 runLoader(0);

@@ -30,6 +30,16 @@ to spare for a **NEAR MISS +100** bonus. Outrun a police chase — or
 bait the cop into crashing — for **+500**. Your best score is saved in
 the browser.
 
+**Difficulties** (picked on the menu, remembered between visits):
+
+| | EASY | NORMAL | HARD |
+|---|---|---|---|
+| starting speed | 72 km/h | 90 km/h | 108 km/h |
+| top speed | 162 km/h | 230 km/h | 281 km/h |
+| traffic | light | normal | dense |
+| police | rare, timid | regular | frequent, aggressive |
+| score multiplier | ×0.7 | ×1 | ×1.4 |
+
 ## How it works — a guided tour
 
 All the game logic lives in `game.js`, split into numbered sections.
@@ -133,8 +143,7 @@ All the knobs are constants at the top of `game.js`:
 
 | Constant | What it does |
 |---|---|
-| `START_SPEED`, `MAX_SPEED` | how fast the run starts / ends up |
-| `SPEED_RAMP` | how quickly difficulty rises |
+| `DIFFICULTIES` | the three presets: speeds, ramp, traffic, police, score multiplier — edit or add your own |
 | `BOOST_MULT`, `BRAKE_MULT` | strength of ↑ / ↓ |
 | `NPC_COLORS` | traffic paint jobs |
 | `LANES`, `LANE_W` | width of the highway |
