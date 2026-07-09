@@ -136,6 +136,17 @@ body::after {
   text-shadow: 0 0 12px rgba(80, 170, 255, 0.9);
 }
 
+#fxTag {
+  position: fixed;
+  left: 18px;
+  bottom: 52px;
+  z-index: 6;
+  color: #7ee8d8;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-shadow: 0 0 10px rgba(60, 220, 190, 0.8);
+}
+
 /* ---------- floating bonus text ---------- */
 #toast {
   position: fixed;

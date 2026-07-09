@@ -114,9 +114,27 @@ while the other pulls alongside and squeezes you toward the barrier
 strips** ahead of you: hit one and your tires blow — five seconds of
 half steering and half speed while the cops close in.
 
-Power-ups float on the road: 🛢️ **oil barrels** (max 3 slicks in
-stock) and a blue 🛡 **shield** that absorbs one traffic collision —
-it won't save you from an arrest, though.
+At wanted ★★★ they call in **air support**: a police helicopter with
+a sweeping searchlight, piloted by a **chunky black-and-white tuxedo
+cat** (visible through the cockpit bubble — look up). Get caught in
+the searchlight and the chase never times out; a radar jammer sends
+the chopper wandering off your trail.
+
+Power-ups float on the road:
+
+- 🛢️ **oil barrel** — +1 oil slick (max 3 in stock)
+- 🛡 **shield** — absorbs one traffic collision (not an arrest!)
+- ⏱ **slow-mo ring** — the world runs at half speed for 4 s, your
+  steering doesn't
+- 📡 **radar jammer** — 7 s where cops can barely track you, the
+  chopper loses you, and no spike strips get deployed
+
+### Levels and weather
+
+Every 1500 m you reach the next **LEVEL** (shown in the HUD): traffic
+gets denser and the speed range climbs. **Rain showers** roll in from
+time to time — visible rain, a darker and glossier wet road, rain
+sound, and genuinely slippery steering until it passes.
 
 ### Collisions and the crash (section 10, `checkCollisions` + `crash`)
 
@@ -152,8 +170,11 @@ background color so the fog blends into it seamlessly.
 ### Dev cheats
 
 Add URL parameters to jump straight to a situation while testing:
-`index.html?wanted=2&copat=150&night=1` starts runs at wanted ★★, the
-first chase at 150 m, and at night. `nomirror=1` disables the mirror.
+`index.html?wanted=3&copat=150&night=1` starts runs at wanted ★★★,
+the first chase at 150 m, and at night. Others: `rain=1` (always
+raining), `pickup=slow` (force one power-up type, spawned in your
+lane), `lvlm=200` (metres per level), `helicam=1` (camera follows the
+helicopter — say hi to the pilot), `nomirror=1`.
 
 ### The loading screen
 
@@ -178,9 +199,13 @@ The game title lives in `index.html`.
 
 ## Ideas for the next version
 
-- Weather: rain streaks, wet-road reflections, slippery handling
-- Helicopter with a searchlight at wanted ★★★
-- More power-ups (magnet, slow-mo, radar jammer)
 - Replace box-cars with real 3D models (`GLTFLoader` + free models
   from [Kenney](https://kenney.nl/assets) or Sketchfab)
-- Curved roads (bend the world sideways with a sine of distance)
+- Curved roads (bend the world sideways with a sine of distance) —
+  the stepping stone toward driving real road shapes
+- Real-world roads: Google Maps data can't be embedded in a game like
+  this (licensing + online-only APIs), but **OpenStreetMap** data is
+  free — once curved roads exist, a local road's shape could be
+  imported as the track
+- A magnet power-up that pulls pickups toward you
+- The cat's backstory

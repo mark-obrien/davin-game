@@ -70,6 +70,9 @@ let shielded = false;          // one free hit from the shield power-up
 let tiresBlown = 0;            // seconds of blown-tire handling left
 let dayT = 0.06;               // position in the day/night cycle [0..1)
 let pickupNext = 250;          // distance at which the next power-up spawns
+let level = 1;                 // rises every 1500 m — traffic gets denser
+let slowMoT = 0;               // seconds of slow-motion power-up left
+let jamT = 0;                  // seconds of radar-jammer power-up left
 
 const player = { x: laneX(1), latVel: 0, group: null };
 let headlights = null;   // spotlight that comes on at night
@@ -91,7 +94,7 @@ const ui = {
   paused: $('paused'), finalScore: $('finalScore'), newBest: $('newBest'),
   overTitle: $('overTitle'), wantedPanel: $('wantedPanel'),
   wanted: $('wanted'), oilBtn: $('oilBtn'), shieldTag: $('shieldTag'),
-  mirror: $('mirror'),
+  mirror: $('mirror'), level: $('level'), fxTag: $('fxTag'),
 };
 
 /* ---------------- 3. Renderer, scene, camera, lights ---------------- */
@@ -223,9 +226,9 @@ function initWorld() {
   scene.add(ground);
 
   roadTex = makeRoadTexture();
+  roadMat = new THREE.MeshStandardMaterial({ map: roadTex, roughness: 0.93 });
   const road = new THREE.Mesh(
-    new THREE.PlaneGeometry(ROAD_HALF * 2, ROAD_LEN),
-    new THREE.MeshStandardMaterial({ map: roadTex, roughness: 0.93 }));
+    new THREE.PlaneGeometry(ROAD_HALF * 2, ROAD_LEN), roadMat);
   road.rotation.x = -Math.PI / 2;
   road.position.set(0, 0.02, -ROAD_LEN / 2 + 60);
   road.receiveShadow = true;
@@ -271,6 +274,7 @@ function initWorld() {
 
   makeForest();
   makeClouds();
+  initRain();
 }
 
 function makeForest() {
@@ -400,6 +404,103 @@ function applyDayNight(dt) {
   const dark = mix(a.dark, b.dark);
   if (cloudMat) cloudMat.color.setScalar(1 - dark * 0.72);
   if (headlights) headlights.intensity = dark * 4;
+}
+
+/* ---------------- 4c. Weather (rain showers) ---------------- */
+
+const RAIN_DROPS = 320;
+const rain = { active: false, fade: 0, nextAt: 35, until: 0,
+               geo: null, mat: null, mesh: null, drops: [], audio: null };
+let roadMat = null;   // hoisted so rain can wet the asphalt
+
+function initRain() {
+  rain.geo = new THREE.BufferGeometry();
+  rain.geo.setAttribute('position',
+    new THREE.BufferAttribute(new Float32Array(RAIN_DROPS * 6), 3));
+  rain.mat = new THREE.LineBasicMaterial(
+    { color: 0xaec6dd, transparent: true, opacity: 0 });
+  rain.mesh = new THREE.LineSegments(rain.geo, rain.mat);
+  rain.mesh.frustumCulled = false;
+  rain.mesh.visible = false;
+  scene.add(rain.mesh);
+  for (let i = 0; i < RAIN_DROPS; i++) {
+    rain.drops.push({ x: (Math.random() - 0.5) * 50,
+      y: Math.random() * 16, z: 10 - Math.random() * 55 });
+  }
+}
+
+function startRainSound() {
+  if (!actx || rain.audio) return;
+  const buf = actx.createBuffer(1, actx.sampleRate * 2, actx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  const src = actx.createBufferSource();
+  src.buffer = buf;
+  src.loop = true;
+  const f = actx.createBiquadFilter();
+  f.type = 'lowpass';
+  f.frequency.value = 900;
+  const g = actx.createGain();
+  g.gain.value = 0;
+  src.connect(f);
+  f.connect(g);
+  g.connect(master);
+  src.start();
+  g.gain.setTargetAtTime(0.05, actx.currentTime, 1.0);
+  rain.audio = { src, g };
+}
+
+function stopRainSound() {
+  if (!rain.audio) return;
+  const a = rain.audio;
+  rain.audio = null;
+  a.g.gain.setTargetAtTime(0, actx.currentTime, 0.8);
+  setTimeout(() => a.src.stop(), 2500);
+}
+
+function updateRain(dt, playerSpeed) {
+  if (state === STATE.PLAYING && !rain.active &&
+      (DEV.has('rain') || elapsed > rain.nextAt)) {
+    rain.active = true;
+    rain.until = elapsed + 20 + Math.random() * 25;
+    toast('🌧 RAIN — SLIPPERY ROAD!');
+    startRainSound();
+  }
+  if (rain.active && elapsed > rain.until && !DEV.has('rain')) {
+    rain.active = false;
+    rain.nextAt = elapsed + 40 + Math.random() * 50;
+    stopRainSound();
+  }
+
+  rain.fade += ((rain.active ? 1 : 0) - rain.fade) * Math.min(1, 1.2 * dt);
+  rain.mesh.visible = rain.fade > 0.01;
+  rain.mat.opacity = rain.fade * 0.55;
+  if (roadMat) {                    // wet asphalt: darker and glossier
+    roadMat.roughness = 0.93 - rain.fade * 0.6;
+    const c = 1 - rain.fade * 0.35;
+    roadMat.color.setRGB(c, c, c);
+  }
+
+  if (!rain.mesh.visible) return;
+  const p = rain.geo.attributes.position.array;
+  for (let i = 0; i < RAIN_DROPS; i++) {
+    const d = rain.drops[i];
+    d.y -= 26 * dt;
+    d.z += playerSpeed * dt * 0.5;
+    if (d.y < 0 || d.z > 12) {
+      d.y = 12 + Math.random() * 6;
+      d.x = camera.position.x + (Math.random() - 0.5) * 50;
+      d.z = 10 - Math.random() * 55;
+    }
+    const j = i * 6;
+    p[j] = d.x;
+    p[j + 1] = d.y;
+    p[j + 2] = d.z;
+    p[j + 3] = d.x + 0.06;
+    p[j + 4] = d.y + 0.55;
+    p[j + 5] = d.z - 0.4;
+  }
+  rain.geo.attributes.position.needsUpdate = true;
 }
 
 /* ---------------- 5. Car factory ---------------- */
@@ -795,10 +896,11 @@ function spawnChase() {
   const g = cops[0].g;
   g.rotation.set(0, 0, 0);   // pooled cars may come back spun around
   startSiren();
-  toast(wanted >= 3 ? '🚨 WANTED ★★★ — WATCH FOR SPIKE STRIPS!'
+  toast(wanted >= 3 ? '🚨 WANTED ★★★ — CHOPPER + SPIKE STRIPS!'
       : units === 2 ? '🚨 TWO UNITS INCOMING!'
       : '🚨 POLICE! OUTRUN THEM!');
   stickTimer = 5;
+  if (wanted >= 3) spawnHeli();   // air support at three stars
   updateWantedHud();
 }
 
@@ -813,6 +915,7 @@ function removeCop(c, msg) {
   }
   if (!cops.length) {
     stopSiren();
+    hideHeli();
     wanted = Math.min(3, wanted + 1);   // they'll be back — angrier
     nextCopAt = distance + difficulty.copEvery * 2.6 + Math.random() * 600;
     updateWantedHud();
@@ -826,7 +929,8 @@ function updateCops(dt, playerSpeed) {
   }
 
   // at wanted ★★+ the chase keeps dropping spike strips ahead of you
-  if (state === STATE.PLAYING && wanted >= 2) {
+  // (unless your radar jammer is scrambling their coordination)
+  if (state === STATE.PLAYING && wanted >= 2 && jamT <= 0) {
     stickTimer -= dt;
     if (stickTimer <= 0) {
       stickTimer = wanted >= 3 ? 4 + Math.random() * 3 : 7 + Math.random() * 4;
@@ -856,6 +960,8 @@ function updateCops(dt, playerSpeed) {
       continue;
     }
 
+    // in the chopper's searchlight the chase never times out
+    if (heli && heli.lit) c.chaseFor += dt;
     if (!c.retreating && c.t > c.chaseFor) c.retreating = true;
 
     // approach the hold position, capped at the cruiser's top speed
@@ -882,7 +988,8 @@ function updateCops(dt, playerSpeed) {
         targetX = player.x + c.side * (2.8 - c.squeeze);
       }
     }
-    const maxLat = (c.role === 'side' ? 6.5 : 8) * dt;
+    // a radar jammer halves how well they can track you sideways
+    const maxLat = (c.role === 'side' ? 6.5 : 8) * (jamT > 0 ? 0.45 : 1) * dt;
     c.x += THREE.MathUtils.clamp(targetX - c.x, -maxLat, maxLat);
     c.x = THREE.MathUtils.clamp(c.x, MEDIAN_HALF + 1.05, ROAD_HALF - 1.05);
 
@@ -932,6 +1039,211 @@ function updateCops(dt, playerSpeed) {
   }
 
   updateSiren();
+}
+
+/* ------ 6d. Police helicopter — pilot: one chunky tuxedo cat ------ */
+
+let heli = null;        // active chase state
+let heliCraft = null;   // the model, built once and reused
+let heliSound = null;
+
+function buildCat() {
+  const g = new THREE.Group();
+  const black = new THREE.MeshStandardMaterial(
+    { color: 0x2b2d33, roughness: 0.75 });
+  const white = new THREE.MeshStandardMaterial(
+    { color: 0xf7f5ef, roughness: 0.8 });
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.5, 14, 12), black);
+  body.scale.set(1.15, 0.95, 1.05);                    // chunky.
+  const belly = new THREE.Mesh(new THREE.SphereGeometry(0.36, 12, 10), white);
+  belly.position.set(0, -0.02, -0.26);                 // tuxedo chest
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.34, 14, 12), black);
+  head.position.set(0, 0.56, -0.12);
+  const muzzle = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 8), white);
+  muzzle.position.set(0, 0.48, -0.32);
+  const earGeo = new THREE.ConeGeometry(0.11, 0.2, 6);
+  const earL = new THREE.Mesh(earGeo, black);
+  earL.position.set(-0.18, 0.87, -0.08);
+  const earR = earL.clone();
+  earR.position.x = 0.18;
+  const eyeGeo = new THREE.SphereGeometry(0.05, 8, 6);
+  const eyeMat = new THREE.MeshStandardMaterial(
+    { color: 0x3dbf5f, emissive: 0x1d8f3f, emissiveIntensity: 0.9 });
+  const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
+  eyeL.position.set(-0.12, 0.62, -0.4);
+  const eyeR = eyeL.clone();
+  eyeR.position.x = 0.12;
+  const nose = new THREE.Mesh(new THREE.SphereGeometry(0.045, 6, 5),
+    new THREE.MeshStandardMaterial({ color: 0xe58ea0 }));
+  nose.position.set(0, 0.52, -0.5);
+  const pawGeo = new THREE.SphereGeometry(0.11, 8, 6);
+  const pawL = new THREE.Mesh(pawGeo, white);          // paws on the stick
+  pawL.position.set(-0.2, 0.1, -0.55);
+  const pawR = pawL.clone();
+  pawR.position.x = 0.2;
+  g.add(body, belly, head, muzzle, earL, earR, eyeL, eyeR, nose, pawL, pawR);
+  return g;
+}
+
+function buildHeli() {
+  const g = new THREE.Group();
+  const white = new THREE.MeshStandardMaterial(
+    { color: 0xf2f4f6, metalness: 0.3, roughness: 0.4 });
+  const blue = new THREE.MeshStandardMaterial(
+    { color: 0x2456a8, roughness: 0.5 });
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.7, 1.5, 3.4), white);
+  body.position.y = 0.2;
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(1.72, 0.34, 3.42), blue);
+  stripe.position.y = 0.05;
+  const boom = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.26, 2.8), white);
+  boom.position.set(0, 0.45, 3.0);
+  const fin = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.9, 0.5), blue);
+  fin.position.set(0, 0.85, 4.2);
+  g.add(body, stripe, boom, fin);
+
+  // glass bubble with the pilot inside — keep it clear enough that
+  // everyone can see who is flying this thing
+  const bubble = new THREE.Mesh(new THREE.SphereGeometry(1.0, 16, 12),
+    new THREE.MeshStandardMaterial({ color: 0xbfe4ff, transparent: true,
+      opacity: 0.14, metalness: 0.5, roughness: 0.08, depthWrite: false }));
+  bubble.position.set(0, 0.4, -1.55);
+  const cat = buildCat();
+  cat.scale.setScalar(1.0);
+  cat.position.set(0, 0.0, -1.45);
+  g.add(cat, bubble);
+
+  // skids
+  const skidGeo = new THREE.BoxGeometry(0.12, 0.08, 2.6);
+  const strutGeo = new THREE.BoxGeometry(0.08, 0.5, 0.08);
+  for (const s of [-1, 1]) {
+    const skid = new THREE.Mesh(skidGeo, carShared.dark);
+    skid.position.set(s * 0.8, -0.85, -0.3);
+    const s1 = new THREE.Mesh(strutGeo, carShared.dark);
+    s1.position.set(s * 0.8, -0.6, -1.0);
+    const s2 = s1.clone();
+    s2.position.z = 0.5;
+    g.add(skid, s1, s2);
+  }
+
+  // main + tail rotors
+  const rotor = new THREE.Group();
+  const bladeGeo = new THREE.BoxGeometry(9, 0.05, 0.3);
+  const b1 = new THREE.Mesh(bladeGeo, carShared.dark);
+  const b2 = b1.clone();
+  b2.rotation.y = Math.PI / 2;
+  const shaft = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.09, 0.09, 0.4, 8), carShared.dark);
+  shaft.position.y = -0.15;
+  rotor.add(b1, b2, shaft);
+  rotor.position.set(0, 1.15, 0);
+  const tailRotor = new THREE.Group();
+  const tb = new THREE.Mesh(new THREE.BoxGeometry(0.06, 1.3, 0.16),
+    carShared.dark);
+  const tb2 = tb.clone();
+  tb2.rotation.x = Math.PI / 2;
+  tailRotor.add(tb, tb2);
+  tailRotor.position.set(0.16, 0.85, 4.25);
+  g.add(rotor, tailRotor);
+
+  // searchlight: a real spotlight plus a visible beam cone
+  const spot = new THREE.SpotLight(0xfff3c2, 2.5, 70, 0.3, 0.5);
+  spot.position.set(0, -0.7, 0);
+  const spotTarget = new THREE.Object3D();
+  spotTarget.position.set(0, -20, 0);
+  spot.target = spotTarget;
+  const beamCone = new THREE.Mesh(
+    new THREE.ConeGeometry(2.6, 1, 14, 1, true),
+    new THREE.MeshBasicMaterial({ color: 0xfff2b0, transparent: true,
+      opacity: 0.15, side: THREE.DoubleSide, depthWrite: false }));
+  g.add(spot, spotTarget, beamCone);
+
+  g.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+  bubble.castShadow = false;
+  beamCone.castShadow = false;
+  g.userData = { rotor, tailRotor, beamCone };
+  return g;
+}
+
+function startHeliSound() {
+  if (!actx || heliSound) return;
+  const o = actx.createOscillator();
+  o.type = 'sawtooth';
+  o.frequency.value = 52;
+  const f = actx.createBiquadFilter();
+  f.type = 'lowpass';
+  f.frequency.value = 180;
+  const g = actx.createGain();
+  g.gain.value = 0.045;
+  const lfo = actx.createOscillator();          // wop-wop-wop
+  lfo.type = 'square';
+  lfo.frequency.value = 11;
+  const lg = actx.createGain();
+  lg.gain.value = 0.03;
+  lfo.connect(lg);
+  lg.connect(g.gain);
+  o.connect(f);
+  f.connect(g);
+  g.connect(master);
+  o.start();
+  lfo.start();
+  heliSound = { o, lfo, g };
+}
+
+function stopHeliSound() {
+  if (!heliSound) return;
+  const h = heliSound;
+  heliSound = null;
+  h.g.gain.setTargetAtTime(0, actx.currentTime, 0.4);
+  setTimeout(() => { h.o.stop(); h.lfo.stop(); }, 1500);
+}
+
+function spawnHeli() {
+  if (!heliCraft) {
+    heliCraft = buildHeli();
+    scene.add(heliCraft);
+  }
+  heliCraft.visible = true;
+  heli = { t: 0, x: player.x, z: -40, y: 15, lit: false, litToast: 0 };
+  startHeliSound();
+}
+
+function hideHeli() {
+  if (!heli) return;
+  heli = null;
+  heliCraft.visible = false;
+  stopHeliSound();
+}
+
+function updateHeli(dt, playerSpeed) {
+  if (!heli) return;
+  heli.t += dt;
+
+  // sweeps ahead of you and periodically dips back over your position;
+  // a radar jammer sends it wandering off your trail
+  const targetX = jamT > 0 ? Math.sin(heli.t * 0.9) * 9
+                           : player.x + Math.sin(heli.t * 0.45) * 4;
+  const targetZ = -18 + Math.cos(heli.t * 0.35) * 20;
+  heli.x += (targetX - heli.x) * Math.min(1, 1.1 * dt);
+  heli.z += (targetZ - heli.z) * Math.min(1, 0.8 * dt);
+  heli.y = 14 + Math.sin(heli.t * 0.8) * 1.2;
+
+  heliCraft.position.set(heli.x, heli.y, heli.z);
+  heliCraft.rotation.y = Math.PI;                 // face you — see the pilot
+  heliCraft.rotation.z = (targetX - heli.x) * 0.05;
+  const u = heliCraft.userData;
+  u.rotor.rotation.y += 28 * dt;
+  u.tailRotor.rotation.x += 40 * dt;
+  u.beamCone.scale.set(1, heli.y, 1);
+  u.beamCone.position.y = -0.7 - heli.y / 2;
+
+  // caught in the searchlight → the chase never times out
+  heli.lit = jamT <= 0 && state === STATE.PLAYING &&
+    Math.abs(heli.x - player.x) < 2.6 && Math.abs(heli.z) < 3.5;
+  if (heli.lit && heli.t > heli.litToast) {
+    heli.litToast = heli.t + 6;
+    toast('🔦 SPOTTED! GET OUT OF THE LIGHT!');
+  }
 }
 
 /* ------- 6c. Spike strips, oil slicks, power-ups, wanted HUD ------- */
@@ -1014,7 +1326,7 @@ function deployOil() {
   toast('🛢️ OIL DROPPED');
 }
 
-const pickupPool = { shield: [], oil: [] };
+const pickupPool = { shield: [], oil: [], slow: [], jammer: [] };
 let pickups = [];
 
 function makePickup(type) {
@@ -1024,6 +1336,29 @@ function makePickup(type) {
       new THREE.MeshStandardMaterial(
         { color: 0x66bbff, emissive: 0x2277ff, emissiveIntensity: 1.6,
           metalness: 0.3, roughness: 0.3 }));
+  }
+  if (type === 'slow') {
+    return new THREE.Mesh(
+      new THREE.TorusGeometry(0.45, 0.16, 10, 18),
+      new THREE.MeshStandardMaterial(
+        { color: 0x59e0e8, emissive: 0x18b7c9, emissiveIntensity: 1.5,
+          roughness: 0.3 }));
+  }
+  if (type === 'jammer') {
+    const g = new THREE.Group();
+    const base = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.22, 0.5),
+      new THREE.MeshStandardMaterial({ color: 0x2a2e33, roughness: 0.6 }));
+    const mast = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.05, 0.05, 0.9, 8),
+      new THREE.MeshStandardMaterial(
+        { color: 0x9aa3ad, metalness: 0.8, roughness: 0.3 }));
+    mast.position.y = 0.55;
+    const tip = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 6),
+      new THREE.MeshStandardMaterial(
+        { color: 0xff4444, emissive: 0xdd1111, emissiveIntensity: 2.2 }));
+    tip.position.y = 1.05;
+    g.add(base, mast, tip);
+    return g;
   }
   const g = new THREE.Group();
   const barrel = new THREE.Mesh(
@@ -1038,13 +1373,23 @@ function makePickup(type) {
 }
 
 function spawnPickup() {
-  const lane = (Math.random() * LANES) | 0;
-  if (npcs.some((n) => n.dir === -1 &&
+  let lane = (Math.random() * LANES) | 0;
+  if (DEV.has('pickup')) {           // test aid: spawn in the player's lane
+    let bestD = 1e9;
+    for (let l = 0; l < LANES; l++) {
+      const d = Math.abs(laneX(l) - player.x);
+      if (d < bestD) { bestD = d; lane = l; }
+    }
+  }
+  if (!DEV.has('pickup') && npcs.some((n) => n.dir === -1 &&
       (n.lane === lane || n.targetLane === lane) && n.z < -240)) {
     pickupNext = distance + 60;   // lane busy at spawn depth — retry soon
     return;
   }
-  const type = Math.random() < 0.5 ? 'shield' : 'oil';
+  const r = Math.random();
+  let type = r < 0.3 ? 'oil' : r < 0.55 ? 'shield' : r < 0.8 ? 'slow'
+                                                             : 'jammer';
+  if (pickupPool[DEV.get('pickup')]) type = DEV.get('pickup');
   let g = pickupPool[type].pop();
   if (!g) { g = makePickup(type); scene.add(g); }
   g.visible = true;
@@ -1059,10 +1404,28 @@ function collectPickup(p) {
     oilCharges = Math.min(3, oilCharges + 1);
     updateOilHud();
     toast('🛢️ +1 OIL SLICK');
+  } else if (p.type === 'slow') {
+    slowMoT = 4;
+    tone(300, 0.35, 'sine', 0.12, -150);
+    toast('⏱ SLOW MOTION!');
+  } else if (p.type === 'jammer') {
+    jamT = 7;
+    tone(1200, 0.25, 'square', 0.08, -500);
+    toast('📡 RADAR JAMMED!');
   } else {
     setShield(true);
     toast('🛡 SHIELD UP!');
   }
+}
+
+// small bottom-left readout for timed effects
+function updateFxTag() {
+  const parts = [];
+  if (slowMoT > 0) parts.push(`⏱ ${Math.ceil(slowMoT)}s`);
+  if (jamT > 0) parts.push(`📡 ${Math.ceil(jamT)}s`);
+  if (rain.fade > 0.5) parts.push('🌧 SLIPPERY');
+  ui.fxTag.textContent = parts.join('   ');
+  ui.fxTag.classList.toggle('hidden', !parts.length);
 }
 
 // Everything lying on the road scrolls past like the scenery does
@@ -1588,6 +1951,18 @@ function resetRun(menuMode) {
   slicks = [];
   updateWantedHud();
   updateOilHud();
+  level = 1;
+  ui.level.textContent = '1';
+  slowMoT = 0;
+  jamT = 0;
+  hideHeli();
+  rain.active = false;
+  rain.fade = 0;
+  rain.until = 0;
+  rain.nextAt = 35 + Math.random() * 40;
+  if (rain.mesh) { rain.mesh.visible = false; rain.mat.opacity = 0; }
+  if (roadMat) { roadMat.roughness = 0.93; roadMat.color.setRGB(1, 1, 1); }
+  stopRainSound();
   for (const n of npcs) releaseNpc(n);
   npcs = [];
   sameTimer = 1.2;
@@ -1676,7 +2051,8 @@ function updatePlayer(dt) {
   const left = keys.left || touch.left;
   const right = keys.right || touch.right;
   const dir = (right ? 1 : 0) - (left ? 1 : 0);
-  const grip = tiresBlown > 0 ? 0.5 : 1;   // blown tires barely steer
+  let grip = tiresBlown > 0 ? 0.5 : 1;     // blown tires barely steer
+  if (rain.fade > 0.5) grip *= 0.8;        // wet road is slippery
   if (dir) {
     player.latVel += dir * STEER_ACCEL * grip * dt;
   } else {
@@ -1726,6 +2102,11 @@ function checkCollisions() {
 }
 
 function updateCamera(dt) {
+  if (DEV.has('helicam') && heli) {   // debug: admire the pilot
+    camera.position.set(heli.x + 3.2, heli.y + 0.6, heli.z + 6.5);
+    camera.lookAt(heli.x, heli.y + 0.2, heli.z);
+    return;
+  }
   const targetX = player.x * 0.6;
   camera.position.x += (targetX - camera.position.x) * Math.min(1, 5 * dt);
   camera.position.y = 4.4;
@@ -1768,14 +2149,30 @@ function frame() {
     updateCamera(dt);
   } else if (state === STATE.PLAYING) {
     elapsed += dt;
-    targetSpeed = Math.min(difficulty.maxSpeed,
-      difficulty.startSpeed + difficulty.ramp * elapsed);
+
+    // levels: every 1500 m the world gets faster and denser
+    const lvl = Math.floor(distance / (Number(DEV.get('lvlm')) || 1500)) + 1;
+    if (lvl !== level) {
+      level = lvl;
+      ui.level.textContent = level;
+      toast(`LEVEL ${level}!`);
+      tone(520, 0.3, 'triangle', 0.12, 400);
+    }
+    targetSpeed = Math.min(difficulty.maxSpeed + (level - 1) * 2,
+      difficulty.startSpeed + difficulty.ramp * elapsed + (level - 1) * 2);
+
     if (tiresBlown > 0) updateBlownTires(dt);
     const want = targetSpeed *
       (keys.up ? BOOST_MULT : keys.down ? BRAKE_MULT : 1) *
       (tiresBlown > 0 ? 0.55 : 1);
     curSpeed += THREE.MathUtils.clamp(want - curSpeed, -38 * dt, 16 * dt);
-    distance += curSpeed * dt;
+
+    // slow-motion power-up: the world runs slow, your reflexes don't
+    slowMoT = Math.max(0, slowMoT - dt);
+    jamT = Math.max(0, jamT - dt);
+    const wdt = slowMoT > 0 ? dt * 0.45 : dt;
+
+    distance += curSpeed * wdt;
     score = Math.floor(distance * difficulty.scoreMult) + bonus;
 
     if (distance > pickupNext) {
@@ -1783,14 +2180,17 @@ function frame() {
       pickupNext = Math.max(pickupNext, distance) + 300 + Math.random() * 250;
     }
 
-    scrollWorld(curSpeed * dt);
+    scrollWorld(curSpeed * wdt);
     updatePlayer(dt);
-    updateNpcs(dt, curSpeed, true);
-    updateCops(dt, curSpeed);
-    updateWorldItems(dt, curSpeed, true);
+    updateNpcs(wdt, curSpeed, true);
+    updateCops(wdt, curSpeed);
+    updateWorldItems(wdt, curSpeed, true);
+    updateHeli(wdt, curSpeed);
+    updateRain(dt, curSpeed);
     checkCollisions();
     updateEngine(curSpeed);
     updateCamera(dt);
+    updateFxTag();
 
     ui.score.textContent = score;
     ui.speed.textContent = `${Math.round(curSpeed * 3.6)} km/h`;
@@ -1803,6 +2203,8 @@ function frame() {
     updateNpcs(dt, curSpeed, false);
     updateCops(dt, curSpeed);
     updateWorldItems(dt, curSpeed, false);
+    updateHeli(dt, curSpeed);     // it hovers over the wreck
+    updateRain(dt, curSpeed);
     updateCrashFx(dt);
     updateCamera(dt);
   }
