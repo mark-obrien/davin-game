@@ -1478,7 +1478,8 @@ function updateWorldItems(dt, playerSpeed, playing) {
 
 function updateWantedHud() {
   ui.wantedPanel.classList.toggle('hidden', wanted === 0);
-  ui.wanted.textContent = '★'.repeat(wanted);
+  // star as an ASCII escape: survives a wrong-charset server
+  ui.wanted.textContent = '\u2605'.repeat(wanted);
   ui.wantedPanel.classList.toggle('chase', cops.length > 0);
 }
 
