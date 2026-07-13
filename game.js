@@ -2202,6 +2202,7 @@ function buildTown(data, lat0, lon0) {
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.03;
   townGroup.add(ground);
+  if (!DEV.has('osmtest')) addSatelliteGround(lat0, lon0, ground, toXZ);
 
   const bldMat = new THREE.MeshStandardMaterial(
     { color: 0xb9b2a4, roughness: 0.85 });
@@ -2275,6 +2276,63 @@ function buildTown(data, lat0, lon0) {
   roads.position.y = 0.02;
   townGroup.add(roads);
   scene.add(townGroup);
+}
+
+// Drape real satellite imagery under the town: a 5×5 grid of Esri
+// World Imagery tiles (free to use with attribution — Google's
+// satellite tiles are not licensed for this) stitched onto a canvas
+// and mapped onto the ground plane. Roads/buildings sit on top of
+// their real photo footprints. Falls back to grass if tiles fail.
+async function addSatelliteGround(lat0, lon0, ground, toXZ) {
+  try {
+    const z = 17;
+    const n = 2 ** z;
+    const rad = lat0 * Math.PI / 180;
+    const xt = Math.floor((lon0 + 180) / 360 * n);
+    const yt = Math.floor(
+      (1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * n);
+    const SPAN = 2;
+    const size = 256 * (SPAN * 2 + 1);
+    const cv = document.createElement('canvas');
+    cv.width = size;
+    cv.height = size;
+    const c2 = cv.getContext('2d');
+    const jobs = [];
+    for (let dx = -SPAN; dx <= SPAN; dx++) {
+      for (let dy = -SPAN; dy <= SPAN; dy++) {
+        jobs.push(new Promise((res) => {
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.onload = () => {
+            c2.drawImage(img, (dx + SPAN) * 256, (dy + SPAN) * 256);
+            res(1);
+          };
+          img.onerror = () => res(0);
+          img.src = 'https://server.arcgisonline.com/ArcGIS/rest/services/' +
+            `World_Imagery/MapServer/tile/${z}/${yt + dy}/${xt + dx}`;
+        }));
+      }
+    }
+    const ok = (await Promise.all(jobs)).reduce((a, b) => a + b, 0);
+    if (!ok || !ground.parent) return;   // no tiles, or town was rebuilt
+    // map the tile grid's corners through the same projection the
+    // roads use, so photo and geometry line up
+    const t2lon = (x) => (x / n) * 360 - 180;
+    const t2lat = (y) =>
+      Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / n))) * 180 / Math.PI;
+    const [x1, z1] = toXZ(t2lat(yt - SPAN), t2lon(xt - SPAN));
+    const [x2, z2] = toXZ(t2lat(yt + SPAN + 1), t2lon(xt + SPAN + 1));
+    const tex = new THREE.CanvasTexture(cv);
+    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    ground.material.dispose();
+    ground.material = new THREE.MeshStandardMaterial(
+      { map: tex, roughness: 0.95 });
+    ground.geometry.dispose();
+    ground.geometry = new THREE.PlaneGeometry(x2 - x1, z2 - z1);
+    ground.position.set((x1 + x2) / 2, -0.03, (z1 + z2) / 2);
+    ui.townStatus.textContent =
+      'Map © OpenStreetMap · Imagery © Esri, Maxar, Earthstar Geographics';
+  } catch (err) { /* keep the grass */ }
 }
 
 function enterTown() {
