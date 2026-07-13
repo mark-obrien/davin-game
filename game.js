@@ -103,7 +103,7 @@ const ui = {
   wanted: $('wanted'), oilBtn: $('oilBtn'), shieldTag: $('shieldTag'),
   mirror: $('mirror'), level: $('level'), fxTag: $('fxTag'),
   coins: $('coins'), rank: $('rank'), cheer: $('cheer'),
-  hornBtn: $('hornBtn'),
+  hornBtn: $('hornBtn'), unlockHint: $('unlockHint'),
 };
 
 /* ---------------- 3. Renderer, scene, camera, lights ---------------- */
@@ -1522,14 +1522,82 @@ function honk() {
 /* --- paint jobs --- */
 
 const PAINTS = { red: 0xd42a1e, blue: 0x1f6fe0, green: 0x2fbf4e,
-                 purple: 0x8a3fd6, pink: 0xf05fa0, yellow: 0xf2c010 };
+                 purple: 0x8a3fd6, pink: 0xf05fa0, yellow: 0xf2c010,
+                 midnight: 0x1a2340, gold: 0xd9a520, rainbow: 0xff0000 };
+// milestone rewards: beat these scores to unlock the fancy paints
+const PAINT_UNLOCKS = { midnight: 1500, gold: 3000, rainbow: 6000 };
 
-function setPaint(name) {
-  paintName = PAINTS[name] ? name : 'red';
+const paintUnlocked = (name) =>
+  !(name in PAINT_UNLOCKS) || best >= PAINT_UNLOCKS[name];
+
+function setPaint(name, quiet) {
+  if (!PAINTS[name]) name = 'red';
+  if (!paintUnlocked(name)) {
+    if (quiet) { setPaint('red', true); return; }
+    ui.unlockHint.textContent =
+      `🔒 Reach ${PAINT_UNLOCKS[name]} points to unlock this paint!`;
+    return;
+  }
+  ui.unlockHint.textContent = '';
+  paintName = name;
   localStorage.setItem('turboRushPaint', paintName);
-  if (player.group) player.group.userData.paint.color.set(PAINTS[paintName]);
+  if (player.group && paintName !== 'rainbow') {
+    player.group.userData.paint.color.set(PAINTS[paintName]);
+  }
   document.querySelectorAll('.paint').forEach((b) =>
     b.classList.toggle('selected', b.dataset.p === paintName));
+}
+
+function updatePaintLocks() {
+  document.querySelectorAll('.paint').forEach((b) => {
+    const locked = !paintUnlocked(b.dataset.p);
+    b.classList.toggle('locked', locked);
+    b.textContent = locked ? '🔒' : '';
+  });
+}
+
+// Officer Whiskers' portrait, drawn once onto a small canvas
+function drawCatFace() {
+  const cv = $('catFace');
+  if (!cv) return;
+  const c = cv.getContext('2d');
+  c.clearRect(0, 0, 96, 96);
+  c.fillStyle = '#232529';                              // ears
+  c.beginPath(); c.moveTo(14, 38); c.lineTo(22, 8); c.lineTo(42, 26); c.fill();
+  c.beginPath(); c.moveTo(82, 38); c.lineTo(74, 8); c.lineTo(54, 26); c.fill();
+  c.fillStyle = '#e58ea0';
+  c.beginPath(); c.moveTo(21, 31); c.lineTo(25, 16); c.lineTo(35, 25); c.fill();
+  c.beginPath(); c.moveTo(75, 31); c.lineTo(71, 16); c.lineTo(61, 25); c.fill();
+  c.fillStyle = '#232529';                              // chunky head
+  c.beginPath(); c.ellipse(48, 54, 34, 30, 0, 0, 7); c.fill();
+  c.fillStyle = '#f5f2ea';                              // white muzzle
+  c.beginPath(); c.ellipse(48, 66, 20, 14, 0, 0, 7); c.fill();
+  c.fillStyle = '#3dbf5f';                              // green eyes
+  c.beginPath(); c.ellipse(34, 50, 7, 8, 0, 0, 7); c.fill();
+  c.beginPath(); c.ellipse(62, 50, 7, 8, 0, 0, 7); c.fill();
+  c.fillStyle = '#111';
+  c.beginPath(); c.ellipse(34, 51, 2.5, 6, 0, 0, 7); c.fill();
+  c.beginPath(); c.ellipse(62, 51, 2.5, 6, 0, 0, 7); c.fill();
+  c.fillStyle = '#e58ea0';                              // nose
+  c.beginPath(); c.moveTo(43, 60); c.lineTo(53, 60); c.lineTo(48, 66); c.fill();
+  c.strokeStyle = '#232529';                            // mouth
+  c.lineWidth = 1.6;
+  c.beginPath();
+  c.moveTo(48, 66); c.lineTo(48, 70);
+  c.moveTo(48, 70); c.quadraticCurveTo(43, 75, 38, 71);
+  c.moveTo(48, 70); c.quadraticCurveTo(53, 75, 58, 71);
+  c.stroke();
+  c.strokeStyle = '#ddd';                               // whiskers
+  c.lineWidth = 1.2;
+  c.beginPath();
+  c.moveTo(28, 62); c.lineTo(6, 58); c.moveTo(28, 67); c.lineTo(6, 68);
+  c.moveTo(68, 62); c.lineTo(90, 58); c.moveTo(68, 67); c.lineTo(90, 68);
+  c.stroke();
+  c.fillStyle = '#2456a8';                              // police cap
+  c.beginPath(); c.ellipse(48, 26, 26, 10, 0, Math.PI, 0); c.fill();
+  c.fillRect(22, 22, 52, 7);
+  c.fillStyle = '#ffd166';                              // badge
+  c.beginPath(); c.arc(48, 25, 3.5, 0, 7); c.fill();
 }
 
 // small bottom-left readout for timed effects
@@ -2158,6 +2226,7 @@ function crash(n, busted) {
     spinZ: (Math.random() - 0.5) * 6 };
 
   ui.overTitle.textContent = busted ? 'BUSTED!' : 'CRASHED!';
+  const prevBest = best;
   if (score > best) {
     best = score;
     localStorage.setItem('turboRush3dBest', best);
@@ -2170,10 +2239,28 @@ function crash(n, busted) {
   const RANKS = [[8000, 'TRAFFIC LEGEND'], [4000, 'TURBO CHAMPION'],
     [2000, 'HIGHWAY HERO'], [800, 'STREET RUNNER'], [0, 'ROOKIE RACER']];
   ui.rank.textContent = `RANK: ${RANKS.find((r) => score >= r[0])[1]}`;
-  const CHEERS = ['SO CLOSE! GO AGAIN!', 'GREAT DRIVING!',
-    'OFFICER WHISKERS IS IMPRESSED! 🐈', 'YOU ALMOST HAD IT!',
-    'TRY THE BOOST NEXT TIME! 🌈', 'HONK MORE! 📣'];
-  ui.cheer.textContent = CHEERS[(Math.random() * CHEERS.length) | 0];
+
+  // crossing a milestone unlocks a paint job — Whiskers announces it
+  let unlockMsg = '';
+  for (const [name, thr] of Object.entries(PAINT_UNLOCKS)) {
+    if (prevBest < thr && best >= thr) {
+      unlockMsg = `"🔓 New paint unlocked: ${name.toUpperCase()}! Fancy."`;
+    }
+  }
+  updatePaintLocks();
+  const QUOTES = busted
+    ? ['"BUSTED! Justice is served. 🐾"',
+       '"The law always wins. Meow."',
+       '"Straight to cat jail. No treats for you."',
+       '"I never miss. I am a cat."']
+    : ['"You almost got away... almost!"',
+       '"Nice driving, citizen!"',
+       '"I was watching the WHOLE time."',
+       '"My grandma drives faster. She is also a cat."',
+       '"Try the boost — I dare you!"',
+       '"See you on the highway!"'];
+  ui.cheer.textContent = unlockMsg ||
+    QUOTES[(Math.random() * QUOTES.length) | 0];
   setTimeout(() => {
     if (state === STATE.OVER) ui.gameover.classList.remove('hidden');
   }, 2200);
@@ -2359,6 +2446,12 @@ function frame() {
     updateCamera(dt);
   }
 
+  // the rainbow paint job shimmers through the hues
+  if (paintName === 'rainbow' && player.group) {
+    player.group.userData.paint.color.setHSL(
+      (clock.elapsedTime * 0.25) % 1, 0.9, 0.5);
+  }
+
   if (state !== STATE.PAUSED) applyDayNight(dt);
   updateParticles(dt);
   updateSmoke(dt);
@@ -2443,7 +2536,9 @@ $('hornBtn').addEventListener('click', () => { ensureAudio(); honk(); });
 
 document.querySelectorAll('.paint').forEach((b) =>
   b.addEventListener('click', () => { setPaint(b.dataset.p); b.blur(); }));
-setPaint(localStorage.getItem('turboRushPaint') || 'red');
+setPaint(localStorage.getItem('turboRushPaint') || 'red', true);
+updatePaintLocks();
+drawCatFace();
 
 function setDifficulty(key) {
   difficulty = DIFFICULTIES[key] || DIFFICULTIES.normal;

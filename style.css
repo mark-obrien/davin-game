@@ -18,7 +18,9 @@ body {
   -webkit-user-select: none;
 }
 
-canvas {
+/* the 3D renderer canvas sits directly under <body>; other canvases
+   (like Officer Whiskers' portrait) lay out normally */
+body > canvas {
   position: fixed;
   inset: 0;
   touch-action: none;
@@ -296,7 +298,55 @@ button.paint.selected {
 .cheer {
   font-size: 16px;
   font-weight: 700;
-  color: #8fd0ff;
+  color: #dfe9f5;
+}
+
+button.paint.locked {
+  filter: grayscale(0.7) brightness(0.55);
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* ---------- Officer Whiskers on the game-over screen ---------- */
+.whiskersBox {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: min(440px, 86vw);
+}
+
+#catFace {
+  width: 84px;
+  height: 84px;
+  flex: none;
+  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.5));
+}
+
+.bubble {
+  position: relative;
+  padding: 10px 16px;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 14px;
+}
+
+.bubble::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 50%;
+  border: 8px solid transparent;
+  border-right-color: rgba(255, 255, 255, 0.16);
+  border-left: 0;
+  transform: translateY(-50%);
+}
+
+.wname {
+  font-size: 11px;
+  letter-spacing: 2px;
+  font-weight: 800;
+  color: #ffd166;
 }
 
 #hornBtn {

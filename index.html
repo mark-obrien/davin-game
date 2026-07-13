@@ -49,7 +49,11 @@
       <button class="paint" data-p="purple" style="background:#8a3fd6"></button>
       <button class="paint" data-p="pink" style="background:#f05fa0"></button>
       <button class="paint" data-p="yellow" style="background:#f2c010"></button>
+      <button class="paint" data-p="midnight" style="background:#1a2340"></button>
+      <button class="paint" data-p="gold" style="background:linear-gradient(135deg,#e8c860,#b8860b)"></button>
+      <button class="paint" data-p="rainbow" style="background:conic-gradient(#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)"></button>
     </div>
+    <p id="unlockHint" class="hint"></p>
     <div class="diffrow">
       <button class="diff" data-diff="easy">EASY</button>
       <button class="diff selected" data-diff="normal">NORMAL</button>
@@ -64,7 +68,13 @@
     <p id="finalScore" class="sub"></p>
     <p id="rank" class="rankline"></p>
     <p id="newBest" class="newbest hidden">&#9733; NEW BEST &#9733;</p>
-    <p id="cheer" class="cheer"></p>
+    <div class="whiskersBox">
+      <canvas id="catFace" width="96" height="96"></canvas>
+      <div class="bubble">
+        <span class="wname">OFFICER WHISKERS</span>
+        <p id="cheer" class="cheer"></p>
+      </div>
+    </div>
     <button id="restartBtn">DRIVE AGAIN</button>
     <p class="hint">or press Enter</p>
   </div>
