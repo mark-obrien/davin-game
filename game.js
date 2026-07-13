@@ -2122,6 +2122,28 @@ const OSM_SAMPLE = { elements: [
                { lat: -0.0004, lon: 0.0011 }, { lat: -0.0008, lon: 0.0011 }] },
 ] };
 
+// Several public Overpass servers exist; some reject requests from a
+// "null" origin (a game opened straight from a file), so try each in
+// turn with a plain GET until one answers.
+async function fetchOverpass(query) {
+  const mirrors = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter',
+    'https://overpass.private.coffee/api/interpreter',
+  ];
+  let lastErr = null;
+  for (const url of mirrors) {
+    try {
+      const r = await fetch(url + '?data=' + encodeURIComponent(query));
+      if (r.ok) return await r.json();
+      lastErr = new Error(`${url} → HTTP ${r.status}`);
+    } catch (err) {
+      lastErr = err;   // CORS/network — try the next mirror
+    }
+  }
+  throw lastErr || new Error('no Overpass mirror answered');
+}
+
 async function startTownDrive() {
   const q = ui.townInput.value.trim();
   if (!q && !DEV.has('osmtest')) {
@@ -2152,15 +2174,14 @@ async function startTownDrive() {
         `way["highway"~"^(primary|secondary|tertiary|residential|` +
         `unclassified|living_street|service|pedestrian)$"](${bbox});` +
         `way["building"](${bbox}););out geom;`;
-      data = await fetch('https://overpass-api.de/api/interpreter',
-        { method: 'POST', body: 'data=' + encodeURIComponent(query) })
-        .then((r) => r.json());
+      data = await fetchOverpass(query);
     }
     buildTown(data, lat, lon);
     ui.townStatus.textContent = 'Map data © OpenStreetMap contributors';
     enterTown();
   } catch (err) {
-    ui.townStatus.textContent = '😿 Could not load the map — are you online?';
+    ui.townStatus.textContent =
+      '😿 Map servers would not answer — wait a minute and try again!';
   }
 }
 
