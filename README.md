@@ -173,6 +173,22 @@ intensity, ambient light) and drives your **headlights** — a real
 spotlight that fades in at night. The sky is a dome mesh rather than a
 background color so the fog blends into it seamlessly.
 
+### Town Drive — drive real streets (section 9b)
+
+Type a real town, street, or landmark into the box on the menu and
+hit **🗺️ DRIVE THERE**. The game looks the place up with the free
+[Nominatim](https://nominatim.org) geocoder, downloads the actual
+streets and buildings around it from
+[OpenStreetMap](https://www.openstreetmap.org) via the Overpass API,
+and builds them as a drivable 3D world — roads as flat ribbons,
+buildings as extruded boxes, coins sprinkled on the streets. Free
+roam with ↑/↓/←/→; Esc returns to the menu. Needs internet; map data
+© OpenStreetMap contributors.
+
+(Why not Google Maps? Google's map data is licensed and can't be
+extracted into game geometry, and its APIs need a billed key. OSM is
+free and open — same idea, no strings.)
+
 ### Dev cheats
 
 Add URL parameters to jump straight to a situation while testing:

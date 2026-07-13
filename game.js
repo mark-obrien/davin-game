@@ -51,7 +51,8 @@ const laneX = (i) => MEDIAN_HALF + LANE_W * (i + 0.5);
 
 /* ---------------- 2. Game state ---------------- */
 
-const STATE = { LOADING: 0, MENU: 1, PLAYING: 2, PAUSED: 3, OVER: 4 };
+const STATE = { LOADING: 0, MENU: 1, PLAYING: 2, PAUSED: 3, OVER: 4,
+                TOWN: 5 };
 let state = STATE.LOADING;
 
 let elapsed = 0;               // seconds since the run started
@@ -104,6 +105,7 @@ const ui = {
   mirror: $('mirror'), level: $('level'), fxTag: $('fxTag'),
   coins: $('coins'), rank: $('rank'), cheer: $('cheer'),
   hornBtn: $('hornBtn'), unlockHint: $('unlockHint'),
+  townInput: $('townInput'), townStatus: $('townStatus'),
 };
 
 /* ---------------- 3. Renderer, scene, camera, lights ---------------- */
@@ -2038,6 +2040,13 @@ function keyName(e) {
 }
 
 window.addEventListener('keydown', (e) => {
+  if (e.target && e.target.tagName === 'INPUT') {   // typing a place name
+    if (e.key === 'Enter') {
+      startTownDrive();
+      e.preventDefault();
+    }
+    return;
+  }
   ensureAudio();
   const k = keyName(e);
   if (k) { keys[k] = true; e.preventDefault(); }
@@ -2049,7 +2058,10 @@ window.addEventListener('keydown', (e) => {
     else if (state === STATE.OVER && ui.gameover.classList.contains('hidden') === false) startGame();
     e.preventDefault();
   }
-  if (e.key === 'p' || e.key === 'P' || e.key === 'Escape') togglePause();
+  if (e.key === 'p' || e.key === 'P' || e.key === 'Escape') {
+    if (state === STATE.TOWN) exitTown();
+    else togglePause();
+  }
   if (e.key === 'h' || e.key === 'H') honk();
   if (e.key === 'm' || e.key === 'M') {
     muted = !muted;
@@ -2071,8 +2083,8 @@ window.addEventListener('blur', () => {
 // touch: hold the left / right half of the screen to steer
 window.addEventListener('pointerdown', (e) => {
   ensureAudio();
-  if (e.target.tagName === 'BUTTON') return;
-  if (state !== STATE.PLAYING) return;
+  if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT') return;
+  if (state !== STATE.PLAYING && state !== STATE.TOWN) return;
   if (e.clientX < window.innerWidth / 2) touch.left = true;
   else touch.right = true;
 });
@@ -2083,6 +2095,229 @@ window.addEventListener('pointerup', () => {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && state === STATE.PLAYING) togglePause();
 });
+
+/* -------- 9b. Town Drive: real roads from OpenStreetMap -------- */
+// Type a real place on the menu; roads + buildings are fetched from
+// the free OpenStreetMap APIs and built as a drivable world.
+// (Google Maps doesn't allow extracting its road data — OSM does.)
+
+const TOWN_X = 6000;   // the town is built far from the highway world
+let townGroup = null;
+const town = { x: 0, z: 0, heading: 0, speed: 0, coins: [] };
+const unitBox = new THREE.BoxGeometry(1, 1, 1);
+
+// tiny synthetic map for offline testing (?osmtest=1)
+const OSM_SAMPLE = { elements: [
+  { tags: { highway: 'residential' },
+    geometry: [{ lat: -0.003, lon: 0 }, { lat: 0.003, lon: 0 }] },
+  { tags: { highway: 'residential' },
+    geometry: [{ lat: 0, lon: -0.003 }, { lat: 0, lon: 0.003 }] },
+  { tags: { highway: 'primary' },
+    geometry: [{ lat: -0.002, lon: -0.003 }, { lat: 0.002, lon: 0.003 }] },
+  { tags: { building: 'yes' },
+    geometry: [{ lat: 0.0004, lon: 0.0004 }, { lat: 0.0009, lon: 0.0004 },
+               { lat: 0.0009, lon: 0.0009 }, { lat: 0.0004, lon: 0.0009 }] },
+  { tags: { building: 'yes' },
+    geometry: [{ lat: -0.0008, lon: 0.0005 }, { lat: -0.0004, lon: 0.0005 },
+               { lat: -0.0004, lon: 0.0011 }, { lat: -0.0008, lon: 0.0011 }] },
+] };
+
+async function startTownDrive() {
+  const q = ui.townInput.value.trim();
+  if (!q && !DEV.has('osmtest')) {
+    ui.townStatus.textContent = 'Type a place first!';
+    return;
+  }
+  try {
+    let lat = 0;
+    let lon = 0;
+    if (!DEV.has('osmtest')) {
+      ui.townStatus.textContent = `🔍 Finding ${q}…`;
+      const g = await fetch('https://nominatim.openstreetmap.org/search' +
+        '?format=json&limit=1&q=' + encodeURIComponent(q))
+        .then((r) => r.json());
+      if (!g.length) {
+        ui.townStatus.textContent = '😿 Could not find that place — try another!';
+        return;
+      }
+      lat = Number(g[0].lat);
+      lon = Number(g[0].lon);
+    }
+    ui.townStatus.textContent = '🛣️ Downloading the streets…';
+    let data = OSM_SAMPLE;
+    if (!DEV.has('osmtest')) {
+      const R = 0.0055;   // roughly a 600 m square around the spot
+      const bbox = `${lat - R},${lon - R * 1.5},${lat + R},${lon + R * 1.5}`;
+      const query = '[out:json][timeout:20];(' +
+        `way["highway"~"^(primary|secondary|tertiary|residential|` +
+        `unclassified|living_street|service|pedestrian)$"](${bbox});` +
+        `way["building"](${bbox}););out geom;`;
+      data = await fetch('https://overpass-api.de/api/interpreter',
+        { method: 'POST', body: 'data=' + encodeURIComponent(query) })
+        .then((r) => r.json());
+    }
+    buildTown(data, lat, lon);
+    ui.townStatus.textContent = 'Map data © OpenStreetMap contributors';
+    enterTown();
+  } catch (err) {
+    ui.townStatus.textContent = '😿 Could not load the map — are you online?';
+  }
+}
+
+function buildTown(data, lat0, lon0) {
+  if (townGroup) {
+    scene.remove(townGroup);
+    townGroup.traverse((o) => { if (o.isMesh && o.geometry !== unitBox) o.geometry.dispose(); });
+  }
+  town.coins = [];
+  townGroup = new THREE.Group();
+  townGroup.position.set(TOWN_X, 0, 0);
+  const cosLat = Math.cos(lat0 * Math.PI / 180);
+  const toXZ = (la, lo) => [(lo - lon0) * 111320 * cosLat,
+                            -(la - lat0) * 110540];
+
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(2400, 2400),
+    new THREE.MeshStandardMaterial({ color: 0x4a8040, roughness: 1 }));
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -0.03;
+  townGroup.add(ground);
+
+  const bldMat = new THREE.MeshStandardMaterial(
+    { color: 0xb9b2a4, roughness: 0.85 });
+  const coinGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.09, 16);
+  const verts = [];
+  let spawnSet = false;
+  let buildings = 0;
+
+  for (const el of data.elements || []) {
+    if (!el.geometry || el.geometry.length < 2) continue;
+    const pts = el.geometry.map((p) => toXZ(p.lat, p.lon));
+
+    if (el.tags && el.tags.building) {
+      if (buildings++ > 400) continue;
+      let minX = 1e9, maxX = -1e9, minZ = 1e9, maxZ = -1e9;
+      for (const [x, z] of pts) {
+        minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+        minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
+      }
+      const w = maxX - minX;
+      const d = maxZ - minZ;
+      if (w < 3 || d < 3 || w > 90 || d > 90) continue;
+      const h = el.tags['building:levels'] * 3 || 5 + Math.random() * 7;
+      const m = new THREE.Mesh(unitBox, bldMat);
+      m.scale.set(w, h, d);
+      m.position.set((minX + maxX) / 2, h / 2, (minZ + maxZ) / 2);
+      townGroup.add(m);
+      continue;
+    }
+
+    // road ribbon: a quad per segment, all in one geometry
+    const wRoad = /primary|secondary/.test(el.tags && el.tags.highway)
+      ? 9 : 6.5;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [x1, z1] = pts[i];
+      const [x2, z2] = pts[i + 1];
+      const dx = x2 - x1;
+      const dz = z2 - z1;
+      const len = Math.hypot(dx, dz) || 1;
+      const nx = (-dz / len) * wRoad / 2;
+      const nz = (dx / len) * wRoad / 2;
+      verts.push(
+        x1 + nx, 0, z1 + nz, x2 + nx, 0, z2 + nz, x2 - nx, 0, z2 - nz,
+        x1 + nx, 0, z1 + nz, x2 - nx, 0, z2 - nz, x1 - nx, 0, z1 - nz);
+      if (Math.random() < 0.18 && town.coins.length < 70) {
+        const c = new THREE.Mesh(coinGeo, coinMat ||
+          (coinMat = new THREE.MeshStandardMaterial(
+            { color: 0xffd34d, emissive: 0xbb8800, emissiveIntensity: 0.6,
+              metalness: 0.8, roughness: 0.25 })));
+        c.rotation.x = Math.PI / 2;
+        c.position.set((x1 + x2) / 2, 1, (z1 + z2) / 2);
+        townGroup.add(c);
+        town.coins.push({ m: c, x: (x1 + x2) / 2, z: (z1 + z2) / 2,
+                          taken: false });
+      }
+      if (!spawnSet) {
+        spawnSet = true;
+        town.x = x1;
+        town.z = z1;
+        town.heading = Math.atan2(dx, -dz);   // face along the street
+      }
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position',
+    new THREE.BufferAttribute(new Float32Array(verts), 3));
+  geo.computeVertexNormals();
+  const roads = new THREE.Mesh(geo,
+    new THREE.MeshStandardMaterial({ color: 0x33373d, roughness: 0.9 }));
+  roads.position.y = 0.02;
+  townGroup.add(roads);
+  scene.add(townGroup);
+}
+
+function enterTown() {
+  state = STATE.TOWN;
+  town.speed = 0;
+  ui.menu.classList.add('hidden');
+  ui.hud.classList.remove('hidden');
+  ui.mirror.classList.add('hidden');
+  ui.oilBtn.classList.add('hidden');
+  ui.hornBtn.classList.add('hidden');
+  ensureAudio();
+  startEngine();
+  toast('🗺️ TOWN DRIVE — Esc to go back');
+}
+
+function exitTown() {
+  stopEngine();
+  state = STATE.MENU;
+  ui.menu.classList.remove('hidden');
+  ui.hud.classList.add('hidden');
+  resetRun(true);   // put the car back on the endless highway
+}
+
+function updateTown(dt) {
+  const accel = (keys.up ? 14 : 0) - (keys.down ? 18 : 0);
+  town.speed = THREE.MathUtils.clamp(
+    town.speed + (accel - town.speed * 0.5) * dt, -7, 22);
+  const steer = ((keys.right ? 1 : 0) - (keys.left ? 1 : 0)) +
+                ((touch.right ? 1 : 0) - (touch.left ? 1 : 0));
+  town.heading += steer * dt * 1.9 *
+    Math.min(1, Math.abs(town.speed) / 7) * Math.sign(town.speed || 1);
+
+  const fx = Math.sin(town.heading);
+  const fz = -Math.cos(town.heading);
+  town.x = THREE.MathUtils.clamp(town.x + fx * town.speed * dt, -1000, 1000);
+  town.z = THREE.MathUtils.clamp(town.z + fz * town.speed * dt, -1000, 1000);
+
+  const px = TOWN_X + town.x;
+  const pz = town.z;
+  player.group.position.set(px, 0, pz);
+  player.group.rotation.set(0, -town.heading, 0);
+  const spin = (town.speed / 0.34) * dt;
+  for (const w of player.group.userData.wheels) w.rotation.x -= spin;
+
+  camera.position.set(px - fx * 9.5, 4.6, pz - fz * 9.5);
+  camera.lookAt(px + fx * 5, 1.0, pz + fz * 5);
+  if (camera.fov !== 62) { camera.fov = 62; camera.updateProjectionMatrix(); }
+
+  for (const c of town.coins) {
+    if (c.taken) continue;
+    c.m.rotation.y += 3.5 * dt;
+    if (Math.hypot(c.x - town.x, c.z - town.z) < 2.6) {
+      c.taken = true;
+      c.m.visible = false;
+      coins++;
+      ui.coins.textContent = coins;
+      tone(1319, 0.08, 'triangle', 0.09);
+      tone(1760, 0.12, 'triangle', 0.09, 0, 0.06);
+    }
+  }
+
+  updateEngine(Math.abs(town.speed) * 1.8 + 3);
+  ui.speed.textContent = `${Math.round(Math.abs(town.speed) * 3.6)} km/h`;
+}
 
 /* ---------------- 10. Game flow + main loop ---------------- */
 
@@ -2444,6 +2679,8 @@ function frame() {
     updateRain(dt, curSpeed);
     updateCrashFx(dt);
     updateCamera(dt);
+  } else if (state === STATE.TOWN) {
+    updateTown(dt);
   }
 
   // the rainbow paint job shimmers through the hues
@@ -2470,7 +2707,8 @@ function frame() {
   renderer.render(scene, camera);
 
   // rear-view mirror: a second, small render looking backwards
-  if (state !== STATE.MENU && !DEV.has('nomirror')) {
+  if (state !== STATE.MENU && state !== STATE.TOWN &&
+      !DEV.has('nomirror')) {
     const mw = THREE.MathUtils.clamp(window.innerWidth * 0.3, 200, 400);
     const mh = mw / 3.2;
     const mx = (window.innerWidth - mw) / 2;
@@ -2533,6 +2771,10 @@ $('startBtn').addEventListener('click', () => { ensureAudio(); startGame(); });
 $('restartBtn').addEventListener('click', () => { ensureAudio(); startGame(); });
 $('oilBtn').addEventListener('click', () => { ensureAudio(); deployOil(); });
 $('hornBtn').addEventListener('click', () => { ensureAudio(); honk(); });
+$('townBtn').addEventListener('click', () => {
+  ensureAudio();
+  startTownDrive();
+});
 
 document.querySelectorAll('.paint').forEach((b) =>
   b.addEventListener('click', () => { setPaint(b.dataset.p); b.blur(); }));
