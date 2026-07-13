@@ -20,11 +20,17 @@ URL.)
 | Action | Keys | Touch |
 |---|---|---|
 | Steer | ← → or A / D | hold left / right half of the screen |
-| Boost | ↑ or W | — |
+| Boost (rainbow trail!) | ↑ or W | — |
 | Brake | ↓ or S | — |
 | Drop oil slick | Space | 🛢️ button, bottom right |
+| Horn — cars move over! | H | 📣 button, bottom right |
 | Pause | P or Esc | — |
 | Mute | M | — |
+
+Pick your **car color** on the menu (it's remembered). Grab the
+**🪙 coin rows** on the road (+25 each). Chain near-misses within 3
+seconds for a **combo** (x2, x3…). Every run ends with a **driver
+rank** — climb from ROOKIE RACER to TRAFFIC LEGEND.
 
 Score = metres driven. Squeeze past a car with less than half a metre
 to spare for a **NEAR MISS +100** bonus. Outrun a police chase — or
@@ -173,8 +179,9 @@ Add URL parameters to jump straight to a situation while testing:
 `index.html?wanted=3&copat=150&night=1` starts runs at wanted ★★★,
 the first chase at 150 m, and at night. Others: `rain=1` (always
 raining), `pickup=slow` (force one power-up type, spawned in your
-lane), `lvlm=200` (metres per level), `helicam=1` (camera follows the
-helicopter — say hi to the pilot), `nomirror=1`.
+lane), `coinlane=1` (coin rows in your lane), `lvlm=200` (metres per
+level), `helicam=1` (camera follows the helicopter — say hi to
+Officer Whiskers), `nomirror=1`.
 
 ### The loading screen
 

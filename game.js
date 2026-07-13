@@ -73,6 +73,13 @@ let pickupNext = 250;          // distance at which the next power-up spawns
 let level = 1;                 // rises every 1500 m — traffic gets denser
 let slowMoT = 0;               // seconds of slow-motion power-up left
 let jamT = 0;                  // seconds of radar-jammer power-up left
+let coins = 0;                 // coins grabbed this run (+25 score each)
+let coinNext = 120;            // distance of the next coin row
+let combo = 0;                 // consecutive near-misses
+let comboT = -10;              // when the last near-miss happened
+let rainbowHue = 0;            // boost-trail color cycling
+let trailT = 0;
+let paintName = 'red';         // the player's chosen paint job
 
 const player = { x: laneX(1), latVel: 0, group: null };
 let headlights = null;   // spotlight that comes on at night
@@ -95,6 +102,8 @@ const ui = {
   overTitle: $('overTitle'), wantedPanel: $('wantedPanel'),
   wanted: $('wanted'), oilBtn: $('oilBtn'), shieldTag: $('shieldTag'),
   mirror: $('mirror'), level: $('level'), fxTag: $('fxTag'),
+  coins: $('coins'), rank: $('rank'), cheer: $('cheer'),
+  hornBtn: $('hornBtn'),
 };
 
 /* ---------------- 3. Renderer, scene, camera, lights ---------------- */
@@ -815,9 +824,13 @@ function updateNpcs(dt, playerSpeed, playing) {
     if (playing && n.dir === -1 && !n.passed && n.z > 3) {
       n.passed = true;
       if (Math.abs(n.x - player.x) < n.halfW + PLAYER_HALF_W + 0.6) {
-        bonus += 100;
-        toast('NEAR MISS +100');
-        sfxNearMiss();
+        // chained near-misses build a combo for bigger points
+        combo = elapsed - comboT < 3 ? combo + 1 : 1;
+        comboT = elapsed;
+        const pts = 100 * combo;
+        bonus += pts;
+        toast(combo > 1 ? `🔥 NEAR MISS x${combo}! +${pts}` : 'NEAR MISS +100');
+        tone(700 + combo * 120, 0.16, 'triangle', 0.1, 600);
       }
     }
   }
@@ -1418,6 +1431,107 @@ function collectPickup(p) {
   }
 }
 
+/* --- coins: the classic collectible --- */
+
+const coinPool = [];
+let activeCoins = [];
+let coinMat = null;
+
+function spawnCoinRow() {
+  let lane = (Math.random() * LANES) | 0;
+  if (DEV.has('coinlane')) {        // test aid: rows in the player's lane
+    let bestD = 1e9;
+    for (let l = 0; l < LANES; l++) {
+      const d = Math.abs(laneX(l) - player.x);
+      if (d < bestD) { bestD = d; lane = l; }
+    }
+  } else if (npcs.some((n) => n.dir === -1 &&
+      (n.lane === lane || n.targetLane === lane) && n.z < -230)) {
+    coinNext = distance + 40;
+    return;
+  }
+  if (!coinMat) {
+    coinMat = new THREE.MeshStandardMaterial(
+      { color: 0xffd34d, emissive: 0xbb8800, emissiveIntensity: 0.6,
+        metalness: 0.8, roughness: 0.25 });
+  }
+  for (let i = 0; i < 5; i++) {
+    let g = coinPool.pop();
+    if (!g) {
+      g = new THREE.Group();
+      const c = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.42, 0.42, 0.09, 16), coinMat);
+      c.rotation.x = Math.PI / 2;   // face the driver, spin like Mario's
+      g.add(c);
+      scene.add(g);
+    }
+    g.visible = true;
+    g.position.set(laneX(lane), 1.0, -300 - i * 7);
+    activeCoins.push({ g, taken: false });
+  }
+}
+
+function updateCoins(dt, playerSpeed, playing) {
+  for (const c of activeCoins) {
+    c.g.position.z += playerSpeed * dt;
+    c.g.rotation.y += 3.5 * dt;
+    if (playing && !c.taken &&
+        Math.abs(c.g.position.x - player.x) < 1.6 &&
+        Math.abs(c.g.position.z) < 2.2) {
+      c.taken = true;
+      coins++;
+      bonus += 25;
+      ui.coins.textContent = coins;
+      tone(1319, 0.08, 'triangle', 0.09);
+      tone(1760, 0.12, 'triangle', 0.09, 0, 0.06);
+    }
+  }
+  activeCoins = activeCoins.filter((c) => {
+    if (c.taken || c.g.position.z > 45) {
+      c.g.visible = false;
+      coinPool.push(c.g);
+      return false;
+    }
+    return true;
+  });
+}
+
+/* --- the horn: beep and polite drivers move over --- */
+
+function honk() {
+  if (state !== STATE.PLAYING) return;
+  tone(392, 0.15, 'square', 0.14);
+  tone(494, 0.15, 'square', 0.14);
+  tone(392, 0.15, 'square', 0.12, 0, 0.22);
+  tone(494, 0.15, 'square', 0.12, 0, 0.22);
+  for (const n of npcs) {
+    if (n.dir !== -1 || n.hit || n.targetLane !== n.lane) continue;
+    if (n.z < -4 && n.z > -30 && Math.abs(n.x - player.x) < 2.2) {
+      for (const to of [n.lane - 1, n.lane + 1]) {
+        if (to >= 0 && to < LANES && laneClearFor(n, to)) {
+          n.targetLane = to;
+          n.blinkT = 0;
+          break;
+        }
+      }
+      break;   // one car per honk
+    }
+  }
+}
+
+/* --- paint jobs --- */
+
+const PAINTS = { red: 0xd42a1e, blue: 0x1f6fe0, green: 0x2fbf4e,
+                 purple: 0x8a3fd6, pink: 0xf05fa0, yellow: 0xf2c010 };
+
+function setPaint(name) {
+  paintName = PAINTS[name] ? name : 'red';
+  localStorage.setItem('turboRushPaint', paintName);
+  if (player.group) player.group.userData.paint.color.set(PAINTS[paintName]);
+  document.querySelectorAll('.paint').forEach((b) =>
+    b.classList.toggle('selected', b.dataset.p === paintName));
+}
+
 // small bottom-left readout for timed effects
 function updateFxTag() {
   const parts = [];
@@ -1562,23 +1676,24 @@ function initSmoke() {
   }
 }
 
-function spawnSmoke(x, y, z, fire) {
+function spawnSmoke(x, y, z, fire, trailColor) {
   const p = smokePool.find((s) => s.life <= 0);
   if (!p) return;
   p.age = 0;
-  p.life = fire ? 0.5 : 1.4 + Math.random() * 1.1;
-  p.baseO = fire ? 0.95 : 0.5;
+  p.small = trailColor !== undefined;   // boost-trail puffs stay small
+  p.life = p.small ? 0.45 : fire ? 0.5 : 1.4 + Math.random() * 1.1;
+  p.baseO = p.small ? 0.85 : fire ? 0.95 : 0.5;
   p.m.visible = true;
-  p.m.position.set(x + (Math.random() - 0.5) * 1.2,
-                   y + (Math.random() - 0.5) * 0.5,
-                   z + (Math.random() - 0.5) * 1.6);
+  p.m.position.set(x + (Math.random() - 0.5) * (p.small ? 0.3 : 1.2),
+                   y + (Math.random() - 0.5) * 0.3,
+                   z + (Math.random() - 0.5) * (p.small ? 0.3 : 1.6));
   p.vel.set((Math.random() - 0.5) * 1.2, 1.2 + Math.random() * 1.4,
             0.6 + (Math.random() - 0.5));
-  p.mat.color.set(fire
+  p.mat.color.set(trailColor !== undefined ? trailColor : fire
     ? (Math.random() < 0.5 ? 0xff8a3c : 0xffb340)
     : [0x43474d, 0x585d64, 0x7b8189][(Math.random() * 3) | 0]);
   p.mat.opacity = p.baseO;
-  p.m.scale.setScalar(fire ? 0.35 : 0.5);
+  p.m.scale.setScalar(p.small ? 0.25 : fire ? 0.35 : 0.5);
 }
 
 function updateSmoke(dt) {
@@ -1588,7 +1703,7 @@ function updateSmoke(dt) {
     if (p.age >= p.life) { p.life = 0; p.m.visible = false; continue; }
     p.m.position.addScaledVector(p.vel, dt);
     const k = p.age / p.life;
-    p.m.scale.setScalar(0.35 + k * 1.9);   // puffs grow as they rise
+    p.m.scale.setScalar(p.small ? 0.25 + k * 0.5 : 0.35 + k * 1.9);
     p.mat.opacity = p.baseO * (1 - k) ** 1.1;
   }
 }
@@ -1867,6 +1982,7 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
   }
   if (e.key === 'p' || e.key === 'P' || e.key === 'Escape') togglePause();
+  if (e.key === 'h' || e.key === 'H') honk();
   if (e.key === 'm' || e.key === 'M') {
     muted = !muted;
     if (master) master.gain.value = muted ? 0 : 0.9;
@@ -1956,6 +2072,13 @@ function resetRun(menuMode) {
   ui.level.textContent = '1';
   slowMoT = 0;
   jamT = 0;
+  coins = 0;
+  ui.coins.textContent = '0';
+  combo = 0;
+  comboT = -10;
+  coinNext = 120 + Math.random() * 80;
+  for (const c of activeCoins) { c.g.visible = false; coinPool.push(c.g); }
+  activeCoins = [];
   hideHeli();
   rain.active = false;
   rain.fade = 0;
@@ -1989,6 +2112,7 @@ function startGame() {
   ui.hud.classList.remove('hidden');
   ui.mirror.classList.remove('hidden');
   ui.oilBtn.classList.remove('hidden');
+  ui.hornBtn.classList.remove('hidden');
   ui.bestEl.textContent = best;
   ensureAudio();
   startEngine();
@@ -2042,7 +2166,14 @@ function crash(n, busted) {
     ui.newBest.classList.add('hidden');
   }
   ui.finalScore.textContent =
-    `Score ${score} — you drove ${(distance / 1000).toFixed(2)} km · ${difficulty.label}`;
+    `Score ${score} · ${(distance / 1000).toFixed(2)} km · 🪙 ${coins} · ${difficulty.label}`;
+  const RANKS = [[8000, 'TRAFFIC LEGEND'], [4000, 'TURBO CHAMPION'],
+    [2000, 'HIGHWAY HERO'], [800, 'STREET RUNNER'], [0, 'ROOKIE RACER']];
+  ui.rank.textContent = `RANK: ${RANKS.find((r) => score >= r[0])[1]}`;
+  const CHEERS = ['SO CLOSE! GO AGAIN!', 'GREAT DRIVING!',
+    'OFFICER WHISKERS IS IMPRESSED! 🐈', 'YOU ALMOST HAD IT!',
+    'TRY THE BOOST NEXT TIME! 🌈', 'HONK MORE! 📣'];
+  ui.cheer.textContent = CHEERS[(Math.random() * CHEERS.length) | 0];
   setTimeout(() => {
     if (state === STATE.OVER) ui.gameover.classList.remove('hidden');
   }, 2200);
@@ -2180,12 +2311,29 @@ function frame() {
       spawnPickup();
       pickupNext = Math.max(pickupNext, distance) + 300 + Math.random() * 250;
     }
+    if (distance > coinNext) {
+      spawnCoinRow();
+      coinNext = Math.max(coinNext, distance) + 130 + Math.random() * 120;
+    }
+
+    // rainbow trail while boosting
+    if (keys.up && curSpeed > 5) {
+      rainbowHue += dt * 1.5;
+      trailT -= dt;
+      if (trailT <= 0) {
+        trailT = 0.05;
+        const c = new THREE.Color().setHSL(rainbowHue % 1, 0.95, 0.6);
+        spawnSmoke(player.x - 0.5, 0.45, 2.5, false, c.getHex());
+        spawnSmoke(player.x + 0.5, 0.45, 2.5, false, c.getHex());
+      }
+    }
 
     scrollWorld(curSpeed * wdt);
     updatePlayer(dt);
     updateNpcs(wdt, curSpeed, true);
     updateCops(wdt, curSpeed);
     updateWorldItems(wdt, curSpeed, true);
+    updateCoins(wdt, curSpeed, true);
     updateHeli(wdt, curSpeed);
     updateRain(dt, curSpeed);
     checkCollisions();
@@ -2204,6 +2352,7 @@ function frame() {
     updateNpcs(dt, curSpeed, false);
     updateCops(dt, curSpeed);
     updateWorldItems(dt, curSpeed, false);
+    updateCoins(dt, curSpeed, false);
     updateHeli(dt, curSpeed);     // it hovers over the wreck
     updateRain(dt, curSpeed);
     updateCrashFx(dt);
@@ -2257,6 +2406,7 @@ const LOAD_STEPS = [
   }],
   ['Final checks…', () => {
     ui.bestEl.textContent = best;
+    setPaint(paintName);   // apply the saved paint to the built car
   }],
 ];
 
@@ -2289,6 +2439,11 @@ function runLoader(i) {
 $('startBtn').addEventListener('click', () => { ensureAudio(); startGame(); });
 $('restartBtn').addEventListener('click', () => { ensureAudio(); startGame(); });
 $('oilBtn').addEventListener('click', () => { ensureAudio(); deployOil(); });
+$('hornBtn').addEventListener('click', () => { ensureAudio(); honk(); });
+
+document.querySelectorAll('.paint').forEach((b) =>
+  b.addEventListener('click', () => { setPaint(b.dataset.p); b.blur(); }));
+setPaint(localStorage.getItem('turboRushPaint') || 'red');
 
 function setDifficulty(key) {
   difficulty = DIFFICULTIES[key] || DIFFICULTIES.normal;

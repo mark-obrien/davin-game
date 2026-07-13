@@ -12,6 +12,7 @@
     <div class="panel"><span class="label">SCORE</span><span id="score">0</span></div>
     <div class="panel"><span class="label">SPEED</span><span id="speed">0</span></div>
     <div class="panel"><span class="label">BEST</span><span id="best">0</span></div>
+    <div class="panel"><span class="label">&#129689;</span><span id="coins">0</span></div>
     <div class="panel hidden" id="wantedPanel">
       <span class="label">WANTED</span><span id="wanted">&#9733;</span>
     </div>
@@ -19,6 +20,7 @@
 
   <div id="mirror" class="hidden"></div>
   <button id="oilBtn" class="hidden">&#128738;&#65039; &times;2</button>
+  <button id="hornBtn" class="hidden">&#128227;</button>
   <div id="shieldTag" class="hidden">&#128737; SHIELD</div>
   <div id="fxTag" class="hidden"></div>
 
@@ -33,13 +35,21 @@
 
   <div id="menu" class="screen hidden">
     <h1>TURBO RUSH 3D</h1>
-    <p class="sub">Dodge the traffic. Survive the highway.</p>
+    <p class="sub">Dodge traffic. Grab coins. Outrun Officer Whiskers. &#128008;</p>
     <p class="controls">
-      Steer: &larr; &rarr; or A / D &nbsp;&bull;&nbsp; Boost: &uarr; &nbsp;&bull;&nbsp; Brake: &darr;
-      &nbsp;&bull;&nbsp; Space = drop oil slick<br>
-      Touch screens: hold the left / right half of the screen<br>
-      P = pause &nbsp;&bull;&nbsp; M = mute
+      Steer: &larr; &rarr; or A / D &nbsp;&bull;&nbsp; Boost: &uarr; &nbsp;&bull;&nbsp; Brake: &darr;<br>
+      Space = oil slick &nbsp;&bull;&nbsp; H = horn (they'll move!)
+      &nbsp;&bull;&nbsp; P = pause &nbsp;&bull;&nbsp; M = mute<br>
+      Touch screens: hold the left / right half of the screen
     </p>
+    <div class="paintrow">
+      <button class="paint selected" data-p="red" style="background:#d42a1e"></button>
+      <button class="paint" data-p="blue" style="background:#1f6fe0"></button>
+      <button class="paint" data-p="green" style="background:#2fbf4e"></button>
+      <button class="paint" data-p="purple" style="background:#8a3fd6"></button>
+      <button class="paint" data-p="pink" style="background:#f05fa0"></button>
+      <button class="paint" data-p="yellow" style="background:#f2c010"></button>
+    </div>
     <div class="diffrow">
       <button class="diff" data-diff="easy">EASY</button>
       <button class="diff selected" data-diff="normal">NORMAL</button>
@@ -52,7 +62,9 @@
   <div id="gameover" class="screen hidden">
     <h1 id="overTitle">CRASHED!</h1>
     <p id="finalScore" class="sub"></p>
+    <p id="rank" class="rankline"></p>
     <p id="newBest" class="newbest hidden">&#9733; NEW BEST &#9733;</p>
+    <p id="cheer" class="cheer"></p>
     <button id="restartBtn">DRIVE AGAIN</button>
     <p class="hint">or press Enter</p>
   </div>
